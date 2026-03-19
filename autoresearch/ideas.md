@@ -1,0 +1,5 @@
+- iterative deepening
+- better heuristic
+- MCTS
+- Node priors
+- do both nodes at once via minimax
