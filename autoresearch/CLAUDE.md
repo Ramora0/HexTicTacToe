@@ -2,6 +2,18 @@
 
 This is an experiment to have the LLM autonomously improve a game-playing bot.
 
+## Game rules
+
+Hex Tic-Tac-Toe is played on a hexagonal board of radius 5 (91 cells) using axial coordinates. Two players (A and B) take turns placing stones:
+
+- **Turn order**: Player A places **1** stone first. After that, players alternate placing **2** stones each (B gets 2, then A gets 2, then B gets 2, ...). The 1-then-2-2-2 structure balances first-move advantage.
+- **Win condition**: First player to get **6 in a row** along any of the three hex axes wins.
+- **Draw**: If the board fills with no winner, it's a draw.
+
+The board uses axial coordinates `(q, r)` with implicit `s = -q - r`. The three line directions are `(1,0)`, `(0,1)`, and `(1,-1)`.
+
+This is essentially **Connect6 on a hex grid** — a well-studied game family. Literature on Connect6 strategy, threat-space search, and hex-grid evaluation may be useful.
+
 ## Setup
 
 To set up a new experiment, work with the user to:
@@ -48,6 +60,10 @@ If your bot class has been renamed, adjust the import accordingly. `og_ai.py` mu
 **The goal is simple: achieve the highest win rate against the previous champion.** Everything in `ai.py` is fair game: add heuristics, change the search algorithm, improve move ordering, add an opening book, try MCTS, try neural evaluation — whatever works. The only constraint is that it runs without crashing and respects the 50ms time limit (the `Bot` base class and iterative deepening handle this).
 
 **Simplicity criterion**: All else being equal, simpler is better. A marginal win-rate improvement that adds ugly complexity is not worth it. Removing something and getting equal or better results is a great outcome. Weigh the complexity cost against the improvement magnitude.
+
+**Parameter sweeps**: Experiments are cheap (~2 minutes each), so feel free to run small parameter sweeps when tuning important values. Keep sweeps to **~3 values** — e.g. if you add a heuristic weight, try 3 representative values rather than exhaustively searching. Pick the best, commit that, and move on. Don't sweep unimportant parameters.
+
+**Ideas tracking**: Check `autoresearch/ideas.md` at the start and periodically during the loop. Use it to keep track of overarching ideas, promising directions, and things to try next. Update it as you go — add new ideas that occur to you, mark ones you've tried, note which worked and which didn't. This prevents losing track of good ideas across many iterations.
 
 ## Output format
 
