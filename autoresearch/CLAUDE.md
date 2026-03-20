@@ -2,6 +2,10 @@
 
 This is an experiment to have the LLM autonomously improve a game-playing bot.
 
+## Working directory
+
+You are launched from `autoresearch/`, but all game files (`ai.py`, `game.py`, `evaluate.py`, etc.) live in the parent directory. **Prefix all Bash commands with `cd .. &&`** so they execute in the right place. For example: `cd .. && python -c "..." > run.log 2>&1`. File edits (Edit/Write/Read tools) use absolute paths and don't need this.
+
 ## Game rules
 
 Hex Tic-Tac-Toe is played on a hexagonal board of radius 5 (91 cells) using axial coordinates. Two players (A and B) take turns placing stones:
@@ -38,12 +42,12 @@ Each experiment is an edit to `ai.py` followed by a head-to-head evaluation agai
 You launch an evaluation like this:
 
 ```bash
-python -c "
+cd .. && python -c "
 from ai import MinimaxBot as NewBot
 from og_ai import MinimaxBot as OldBot
 from evaluate import evaluate
 evaluate(NewBot(), OldBot(), num_games=200, time_limit=0.05)
-" > run.log 2>&1
+"
 ```
 
 If your bot class has been renamed, adjust the import accordingly. `og_ai.py` must always be importable — never modify it directly.
@@ -87,7 +91,7 @@ The evaluation prints a summary like this:
 Extract the key numbers from the log:
 
 ```bash
-tail -n 15 run.log
+cd .. && tail -n 15 run.log
 ```
 
 ## Logging results
@@ -125,9 +129,8 @@ LOOP FOREVER:
 1. Look at the git state: the current branch/commit we're on.
 2. Edit `ai.py` with an experimental idea.
 3. git commit `ai.py`.
-4. Run the evaluation: `python -c "..." > run.log 2>&1` (redirect everything — do NOT let output flood your context).
-5. Read out the results: `tail -n 15 run.log`
-6. If the output is empty or shows a traceback, the run crashed. Run `tail -n 50 run.log` to read the stack trace and attempt a fix. If you can't get things to work after a few attempts, give up on this idea.
+4. Run the evaluation: `cd .. && python -c "..."` — output goes straight into context, no log file needed.
+5. If the output is empty or shows a traceback, the run crashed. Attempt a fix. If you can't get things to work after a few attempts, give up on this idea.
 7. Record the results in the tsv. (NOTE: do not commit results.tsv — leave it untracked.)
 8. **Decide whether to keep or discard.** Use judgment, not a hard cutoff. A win rate around **55%+** is a clear improvement — keep it. But context matters:
    - A simplification that wins 51%? Keep it — simpler code at equal strength is a win.
