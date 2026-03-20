@@ -12,7 +12,8 @@ from multiprocessing import Pool
 from tqdm import tqdm
 from game import HexGame, Player
 from bot import RandomBot
-from ai import MinimaxBot
+from og_ai import MinimaxBot as OgMinimaxBot
+from ai import MinimaxBot as NewMinimaxBot
 
 
 # Grace factor: allow 3x the time limit before counting as a violation.
@@ -30,14 +31,14 @@ class TimeLimitExceeded(Exception):
         super().__init__(f"{bot} exceeded time limit {violations} times")
 
 
-def play_game(bot_a, bot_b, radius=5, win_length=6, violations=None):
+def play_game(bot_a, bot_b, win_length=6, violations=None):
     """Play one game. Returns (winner, depth_counts_a, depth_counts_b, time_a, time_b).
 
     depth_counts maps depth -> number of moves at that depth.
     time_a/time_b are (total_seconds, num_moves) tuples.
     violations is a dict {bot: count} tracked within this game.
     """
-    game = HexGame(radius=radius, win_length=win_length)
+    game = HexGame(win_length=win_length)
     bots = {Player.A: bot_a, Player.B: bot_b}
     depths = {Player.A: defaultdict(int), Player.B: defaultdict(int)}
     times = {Player.A: [0.0, 0], Player.B: [0.0, 0]}  # [total_secs, num_moves]
@@ -72,7 +73,7 @@ def play_game(bot_a, bot_b, radius=5, win_length=6, violations=None):
 
 def _play_one(args):
     """Worker function for multiprocessing. Plays a single game."""
-    bot_a, bot_b, game_idx, radius, win_length = args
+    bot_a, bot_b, game_idx, win_length = args
     swapped = game_idx % 2 == 1
 
     if swapped:
@@ -83,7 +84,7 @@ def _play_one(args):
     violations = {}
     exceeded = False
     try:
-        winner, d_a, d_b, t_a, t_b = play_game(seat_a, seat_b, radius, win_length, violations)
+        winner, d_a, d_b, t_a, t_b = play_game(seat_a, seat_b, win_length, violations)
     except TimeLimitExceeded:
         exceeded = True
         winner = Player.NONE
@@ -103,7 +104,7 @@ def _play_one(args):
     )
 
 
-def evaluate(bot_a, bot_b, num_games=100, radius=5, win_length=6, time_limit=0.1):
+def evaluate(bot_a, bot_b, num_games=100, win_length=6, time_limit=0.1):
     """Play num_games between two bots in parallel, swapping sides each game."""
     bot_a.time_limit = time_limit
     bot_b.time_limit = time_limit
@@ -120,7 +121,7 @@ def evaluate(bot_a, bot_b, num_games=100, radius=5, win_length=6, time_limit=0.1
     bot_b_time = [0.0, 0]
 
     workers = os.cpu_count() or 1
-    args = [(bot_a, bot_b, i, radius, win_length) for i in range(num_games)]
+    args = [(bot_a, bot_b, i, win_length) for i in range(num_games)]
 
     t0 = time.time()
 
@@ -171,7 +172,7 @@ def evaluate(bot_a, bot_b, num_games=100, radius=5, win_length=6, time_limit=0.1
     total = max(games_played, 1)
 
     print(f"\n\n{'='*50}")
-    print(f"  {bot_a} vs {bot_b}  —  {games_played} games in {elapsed:.1f}s")
+    print(f"  {bot_a} vs {bot_b}  \u2014  {games_played} games in {elapsed:.1f}s")
     print(f"{'='*50}")
     na, nb = str(bot_a), str(bot_b)
     print(f"  {na:>15s}: {bot_a_wins:3d} wins ({100*bot_a_wins/total:.0f}%)")
@@ -205,10 +206,17 @@ def evaluate(bot_a, bot_b, num_games=100, radius=5, win_length=6, time_limit=0.1
     return bot_a_wins, bot_b_wins, draws
 
 
+class NewAI(NewMinimaxBot):
+    def __str__(self): return "NewAI"
+
+class OgAI(OgMinimaxBot):
+    def __str__(self): return "OgAI"
+
+
 if __name__ == "__main__":
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 20
 
-    a = MinimaxBot(time_limit=0.05)
-    b = RandomBot(time_limit=0.05)
+    a = NewAI(time_limit=0.05)
+    b = OgAI(time_limit=0.05)
 
     evaluate(a, b, num_games=n)

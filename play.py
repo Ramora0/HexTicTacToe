@@ -1,4 +1,4 @@
-"""Pygame interface for Hexagonal Tic-Tac-Toe.
+"""Pygame interface for Hexagonal Tic-Tac-Toe (infinite grid).
 
 Run this file to play against the AI (you are Player A, AI is Player B).
 Controls: Click to place, R to restart, Q to quit.
@@ -8,13 +8,13 @@ import sys
 import math
 import pygame
 from game import HexGame, Player
-from ai import MinimaxBot
+from og_ai import MinimaxBot
 
 # --- Layout ---
 WINDOW_WIDTH = 900
 WINDOW_HEIGHT = 800
-HEX_SIZE = 28
-BOARD_RADIUS = 5
+MAX_HEX_SIZE = 28
+VISIBLE_DIST = 3  # show empty cells up to this distance from occupied stones
 
 # --- Colors ---
 BG_COLOR = (24, 24, 32)
@@ -28,6 +28,19 @@ TEXT_COLOR = (220, 220, 230)
 SUBTLE_TEXT = (130, 130, 150)
 
 AI_MOVE_DELAY = 300  # ms between AI stone placements
+
+
+def _hex_distance(dq, dr):
+    return max(abs(dq), abs(dr), abs(dq + dr))
+
+
+# Precomputed offsets for visible cell generation
+_VISIBLE_OFFSETS = tuple(
+    (dq, dr)
+    for dq in range(-VISIBLE_DIST, VISIBLE_DIST + 1)
+    for dr in range(-VISIBLE_DIST, VISIBLE_DIST + 1)
+    if _hex_distance(dq, dr) <= VISIBLE_DIST
+)
 
 
 def hex_corners(cx, cy, size):
@@ -66,15 +79,65 @@ def pixel_to_hex(mx, my, size, ox, oy):
     return int(rq), int(rr)
 
 
-def draw_board(screen, game, hover_hex, ox, oy, fonts):
+def get_visible_cells(game):
+    """Cells to render: occupied + empties within VISIBLE_DIST of occupied."""
+    board = game.board
+    if not board:
+        return {(oq, or_) for oq, or_ in _VISIBLE_OFFSETS}
+    cells = set()
+    for q, r in board:
+        for oq, or_ in _VISIBLE_OFFSETS:
+            cells.add((q + oq, r + or_))
+    return cells
+
+
+def compute_view(visible_cells):
+    """Compute (hex_size, ox, oy) to fit and center visible cells in the window."""
+    if not visible_cells:
+        return MAX_HEX_SIZE, WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2
+
+    S3 = math.sqrt(3)
+    uxs = [S3 * (q + r * 0.5) for q, r in visible_cells]
+    uys = [1.5 * r for q, r in visible_cells]
+
+    min_ux, max_ux = min(uxs), max(uxs)
+    min_uy, max_uy = min(uys), max(uys)
+
+    # Extent in unit coords + padding for hex edges
+    ext_x = max_ux - min_ux + S3
+    ext_y = max_uy - min_uy + 2
+
+    # Available area (leave room for status text top/bottom)
+    avail_x = WINDOW_WIDTH - 60
+    avail_y = WINDOW_HEIGHT - 140
+
+    size = MAX_HEX_SIZE
+    if ext_x > 0:
+        size = min(size, avail_x / ext_x)
+    if ext_y > 0:
+        size = min(size, avail_y / ext_y)
+    size = max(8.0, size)
+
+    center_ux = (min_ux + max_ux) / 2
+    center_uy = (min_uy + max_uy) / 2
+    ox = WINDOW_WIDTH / 2 - center_ux * size
+    oy = WINDOW_HEIGHT / 2 - center_uy * size + 20
+
+    return size, ox, oy
+
+
+def draw_board(screen, game, visible_cells, hover_hex, hex_size, ox, oy, fonts):
     font_big, font_med, font_sm = fonts
     screen.fill(BG_COLOR)
 
-    # Hex cells
-    for (q, r), player in game.board.items():
-        cx, cy = hex_to_pixel(q, r, HEX_SIZE, ox, oy)
-        corners = hex_corners(cx, cy, HEX_SIZE)
+    board = game.board
 
+    # Hex cells
+    for (q, r) in visible_cells:
+        cx, cy = hex_to_pixel(q, r, hex_size, ox, oy)
+        corners = hex_corners(cx, cy, hex_size)
+
+        player = board.get((q, r))
         if player == Player.A:
             fill = PLAYER_A_COLOR
         elif player == Player.B:
@@ -89,8 +152,8 @@ def draw_board(screen, game, hover_hex, ox, oy, fonts):
 
     # Winning cells highlight
     for (q, r) in game.winning_cells:
-        cx, cy = hex_to_pixel(q, r, HEX_SIZE, ox, oy)
-        corners = hex_corners(cx, cy, HEX_SIZE)
+        cx, cy = hex_to_pixel(q, r, hex_size, ox, oy)
+        corners = hex_corners(cx, cy, hex_size)
         pygame.draw.polygon(screen, WIN_BORDER, corners, 3)
 
     # Status text
@@ -122,7 +185,7 @@ def draw_board(screen, game, hover_hex, ox, oy, fonts):
 def main():
     pygame.init()
     screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-    pygame.display.set_caption("Hex Tic-Tac-Toe — 6 in a Row")
+    pygame.display.set_caption("Hex Tic-Tac-Toe \u2014 6 in a Row")
     clock = pygame.time.Clock()
 
     fonts = (
@@ -131,16 +194,17 @@ def main():
         pygame.font.SysFont("Arial", 16),
     )
 
-    game = HexGame(radius=BOARD_RADIUS, win_length=6)
+    game = HexGame(win_length=6)
     ai = MinimaxBot(time_limit=0.5)
-    ox = WINDOW_WIDTH // 2
-    oy = WINDOW_HEIGHT // 2 + 20
 
     hover_hex = None
     last_ai_time = 0
 
     while True:
         now = pygame.time.get_ticks()
+
+        visible_cells = get_visible_cells(game)
+        hex_size, ox, oy = compute_view(visible_cells)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -149,13 +213,16 @@ def main():
 
             elif event.type == pygame.MOUSEMOTION:
                 if game.current_player == Player.A and not game.game_over:
-                    q, r = pixel_to_hex(*event.pos, HEX_SIZE, ox, oy)
-                    hover_hex = (q, r) if game.is_valid_move(q, r) else None
+                    q, r = pixel_to_hex(*event.pos, hex_size, ox, oy)
+                    if (q, r) in visible_cells and game.is_valid_move(q, r):
+                        hover_hex = (q, r)
+                    else:
+                        hover_hex = None
 
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if game.current_player == Player.A and not game.game_over:
-                    q, r = pixel_to_hex(*event.pos, HEX_SIZE, ox, oy)
-                    if game.make_move(q, r):
+                    q, r = pixel_to_hex(*event.pos, hex_size, ox, oy)
+                    if (q, r) in visible_cells and game.make_move(q, r):
                         hover_hex = None
                         last_ai_time = now  # start AI delay timer
 
@@ -171,12 +238,12 @@ def main():
         if (game.current_player == Player.B and not game.game_over
                 and now - last_ai_time >= AI_MOVE_DELAY):
             # Draw "thinking" frame before computing
-            draw_board(screen, game, None, ox, oy, fonts)
+            draw_board(screen, game, visible_cells, None, hex_size, ox, oy, fonts)
             q, r = ai.get_move(game)
             game.make_move(q, r)
             last_ai_time = pygame.time.get_ticks()
 
-        draw_board(screen, game, hover_hex, ox, oy, fonts)
+        draw_board(screen, game, visible_cells, hover_hex, hex_size, ox, oy, fonts)
         clock.tick(60)
 
 

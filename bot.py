@@ -2,7 +2,19 @@
 
 import random
 from abc import ABC, abstractmethod
-from game import Player
+
+
+def hex_distance(dq, dr):
+    return max(abs(dq), abs(dr), abs(dq + dr))
+
+
+# Precomputed distance-2 offsets for candidate generation
+_D2_OFFSETS = tuple(
+    (dq, dr)
+    for dq in range(-2, 3)
+    for dr in range(-2, 3)
+    if hex_distance(dq, dr) <= 2 and (dq, dr) != (0, 0)
+)
 
 
 class Bot(ABC):
@@ -22,8 +34,15 @@ class Bot(ABC):
 
 
 class RandomBot(Bot):
-    """Places stones randomly. Useful as a baseline."""
+    """Places stones randomly near existing stones. Useful as a baseline."""
 
     def get_move(self, game):
-        empty = [pos for pos, p in game.board.items() if p == Player.NONE]
-        return random.choice(empty)
+        if not game.board:
+            return (0, 0)
+        candidates = set()
+        for q, r in game.board:
+            for dq, dr in _D2_OFFSETS:
+                nb = (q + dq, r + dr)
+                if nb not in game.board:
+                    candidates.add(nb)
+        return random.choice(list(candidates))

@@ -1,9 +1,9 @@
 """Hexagonal Tic-Tac-Toe game logic.
 
 Rules:
-- Played on a hex board of configurable radius (default 5, giving 91 cells).
+- Played on an infinite hex grid.
 - Player A places 1 stone first, then players alternate placing 2 stones each.
-- First player to get 6 in a row along any hex axis wins.
+- First player to get win_length in a row along any hex axis wins.
 - Uses axial coordinates (q, r) with implicit s = -q - r.
 """
 
@@ -23,7 +23,6 @@ HEX_DIRECTIONS = [(1, 0), (0, 1), (1, -1)]
 
 @dataclass
 class HexGame:
-    radius: int = 5
     win_length: int = 6
 
     board: dict = field(default_factory=dict, init=False, repr=False)
@@ -38,11 +37,7 @@ class HexGame:
         self.reset()
 
     def reset(self):
-        self.board = {}
-        for q in range(-self.radius, self.radius + 1):
-            for r in range(-self.radius, self.radius + 1):
-                if abs(-q - r) <= self.radius:
-                    self.board[(q, r)] = Player.NONE
+        self.board = {}  # sparse: only occupied cells
         self.current_player = Player.A
         self.moves_left_in_turn = 1  # A gets only 1 move on the first turn
         self.move_count = 0
@@ -50,14 +45,10 @@ class HexGame:
         self.winning_cells = []
         self.game_over = False
 
-    @property
-    def cell_count(self):
-        return len(self.board)
-
     def is_valid_move(self, q, r):
         if self.game_over:
             return False
-        return (q, r) in self.board and self.board[(q, r)] == Player.NONE
+        return (q, r) not in self.board
 
     def save_state(self):
         """Snapshot the mutable state (for undo in search)."""
@@ -71,7 +62,7 @@ class HexGame:
 
     def undo_move(self, q, r, state):
         """Undo a move and restore the saved state."""
-        self.board[(q, r)] = Player.NONE
+        del self.board[(q, r)]
         self.move_count -= 1
         (self.current_player, self.moves_left_in_turn,
          self.winner, self.winning_cells, self.game_over) = state
@@ -86,10 +77,6 @@ class HexGame:
 
         if self._check_win(q, r):
             self.winner = self.current_player
-            self.game_over = True
-            return True
-
-        if self.move_count >= self.cell_count:
             self.game_over = True
             return True
 
