@@ -2,7 +2,6 @@
 
 Uses alpha-beta pruning with a heuristic evaluation function that scores
 positions based on contiguous line segments along the three hex axes.
-Precomputes all 6-cell windows for fast evaluation.
 """
 
 import math
@@ -21,73 +20,60 @@ def hex_distance(dq, dr):
     return max(abs(dq), abs(dr), abs(ds))
 
 
-# Precompute all cells on the board
-RADIUS = 5
-ALL_CELLS = set()
-for _q in range(-RADIUS, RADIUS + 1):
-    for _r in range(-RADIUS, RADIUS + 1):
-        if abs(-_q - _r) <= RADIUS:
-            ALL_CELLS.add((_q, _r))
-
-# Precompute all 6-cell windows (as tuples of coordinates)
-WIN_WINDOWS = []
-for dq, dr in HEX_DIRECTIONS:
-    visited = set()
-    for cell in ALL_CELLS:
-        if cell in visited:
-            continue
-        q, r = cell
-        while (q - dq, r - dr) in ALL_CELLS:
-            q -= dq
-            r -= dr
-        line = []
-        cq, cr = q, r
-        while (cq, cr) in ALL_CELLS:
-            visited.add((cq, cr))
-            line.append((cq, cr))
-            cq += dq
-            cr += dr
-        for i in range(len(line) - 5):
-            WIN_WINDOWS.append(tuple(line[i:i+6]))
-
 # Scores for contiguous groups of length N (index = count)
+# Longer lines are exponentially more valuable
 LINE_SCORES = [0, 1, 10, 100, 1000, 10000, 100000]
 
 
 def evaluate_position(game, player):
-    """Score the position from player's perspective using precomputed windows."""
-    opponent = Player.B if player == Player.A else Player.A
-    board = game.board
-    score = 0
-    none = Player.NONE
+    """Score the position from player's perspective.
 
-    for window in WIN_WINDOWS:
-        my_count = 0
-        opp_count = 0
-        for cell in window:
-            v = board[cell]
-            if v == player:
-                my_count += 1
-            elif v != none:
-                opp_count += 1
-        if my_count > 0 and opp_count == 0:
-            score += LINE_SCORES[my_count]
-        elif opp_count > 0 and my_count == 0:
-            score -= LINE_SCORES[opp_count]
+    For each line direction, scan every possible 6-cell window and count
+    how many belong to each player. A window with stones from both players
+    is dead (score 0). Otherwise score based on count.
+    """
+    opponent = Player.B if player == Player.A else Player.A
+    score = 0
+
+    # For each direction, walk all lines through the board
+    for dq, dr in HEX_DIRECTIONS:
+        # Find all starting cells: cells with no predecessor in this direction
+        visited = set()
+        for cell in game.board:
+            if cell in visited:
+                continue
+            # Walk backward to find the start of this line
+            q, r = cell
+            while (q - dq, r - dr) in game.board:
+                q -= dq
+                r -= dr
+            # Now walk forward, collecting the full line
+            line = []
+            cq, cr = q, r
+            while (cq, cr) in game.board:
+                visited.add((cq, cr))
+                line.append(game.board[(cq, cr)])
+                cq += dq
+                cr += dr
+            # Score all windows of length 6 in this line
+            for i in range(len(line) - 5):
+                window = line[i:i+6]
+                my_count = window.count(player)
+                opp_count = window.count(opponent)
+                if my_count > 0 and opp_count == 0:
+                    score += LINE_SCORES[my_count]
+                elif opp_count > 0 and my_count == 0:
+                    score -= LINE_SCORES[opp_count]
 
     return score
 
 
-# Precompute neighbor offsets for distance 2
-_NEIGHBOR_OFFSETS = []
-for _dq in range(-2, 3):
-    for _dr in range(-2, 3):
-        if hex_distance(_dq, _dr) <= 2 and (_dq, _dr) != (0, 0):
-            _NEIGHBOR_OFFSETS.append((_dq, _dr))
+# The 6 hex neighbors at distance 1
+_HEX_NEIGHBORS = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, -1), (-1, 1)]
 
 
 def get_candidates(game):
-    """Return empty cells within hex-distance 2 of any occupied cell."""
+    """Return empty cells adjacent (distance 1) to any occupied cell."""
     occupied = [pos for pos, p in game.board.items() if p != Player.NONE]
     if not occupied:
         return [(0, 0)]
@@ -96,7 +82,7 @@ def get_candidates(game):
     none = Player.NONE
     candidates = set()
     for q, r in occupied:
-        for dq, dr in _NEIGHBOR_OFFSETS:
+        for dq, dr in _HEX_NEIGHBORS:
             nq, nr = q + dq, r + dr
             if (nq, nr) in board and board[(nq, nr)] == none:
                 candidates.add((nq, nr))
