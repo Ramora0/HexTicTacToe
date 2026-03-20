@@ -85,6 +85,11 @@ def evaluate_position(game, player):
     return score
 
 
+# Precomputed distance-2 offsets (18 cells, avoids hex_distance calls)
+_D2_OFFSETS = [(dq, dr) for dq in range(-2, 3) for dr in range(-2, 3)
+               if hex_distance(dq, dr) <= 2 and (dq, dr) != (0, 0)]
+
+
 def get_candidates(game):
     """Return empty cells within hex-distance 2 of any occupied cell."""
     occupied = [pos for pos, p in game.board.items() if p != Player.NONE]
@@ -93,12 +98,10 @@ def get_candidates(game):
 
     candidates = set()
     for q, r in occupied:
-        for dq in range(-2, 3):
-            for dr in range(-2, 3):
-                if hex_distance(dq, dr) <= 2:
-                    nq, nr = q + dq, r + dr
-                    if (nq, nr) in game.board and game.board[(nq, nr)] == Player.NONE:
-                        candidates.add((nq, nr))
+        for dq, dr in _D2_OFFSETS:
+            nq, nr = q + dq, r + dr
+            if (nq, nr) in game.board and game.board[(nq, nr)] == Player.NONE:
+                candidates.add((nq, nr))
     return list(candidates)
 
 
