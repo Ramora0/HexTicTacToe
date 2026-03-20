@@ -150,6 +150,7 @@ class MinimaxBot(Bot):
         # Build score lookup table for current player perspective.
         # _score_table[a_count][b_count] = contribution of a window with
         # that many A/B stones, from self._player's point of view.
+        # Includes defensive multipliers for asymmetric defense weighting.
         sz = _WIN_LENGTH + 1
         self._score_table = [[0] * sz for _ in range(sz)]
         for a in range(sz):
@@ -161,7 +162,7 @@ class MinimaxBot(Bot):
                 if my > 0 and opp == 0:
                     self._score_table[a][b] = LINE_SCORES[my]
                 elif opp > 0 and my == 0:
-                    self._score_table[a][b] = -LINE_SCORES[opp]
+                    self._score_table[a][b] = -int(LINE_SCORES[opp] * _DEF_MULT[opp])
 
         # Initialize incremental eval: window counts stored as dict
         # keyed by (dir_idx, start_q, start_r) -> [a_count, b_count]
