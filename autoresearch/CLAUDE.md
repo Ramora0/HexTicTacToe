@@ -4,7 +4,13 @@ This is an experiment to have the LLM autonomously improve a game-playing bot.
 
 ## Working directory
 
-You are launched from `autoresearch/`, but all game files (`ai.py`, `game.py`, `evaluate.py`, etc.) live in the parent directory. **Prefix `python`, `tail`, and `cp` commands with `cd .. &&`** so they execute in the right place. For example: `cd .. && python -c "..."`. **Do NOT use `cd ..` with git commands** — git works from any subdirectory automatically. File edits (Edit/Write/Read tools) use absolute paths and don't need this.
+You are launched from `autoresearch/`, but all game files (`ai.py`, `game.py`, `evaluate.py`, etc.) live in the parent directory.
+
+**Command rules:**
+- **Python/shell commands**: Use `../` paths instead of `cd .. &&`. For example: `python ../run_eval.py`, `tail ../ai.py`, `cp ../ai.py ../og_ai.py`.
+- **Git commands**: Run them as-is from `autoresearch/` — git works from any subdirectory. Never prefix git commands with `cd`.
+- **NEVER use `cd .. &&` or `cd ../` prefixes** for any command.
+- File edits (Edit/Write/Read tools) use absolute paths and don't need any of this.
 
 ## Game rules
 
@@ -37,21 +43,21 @@ Once you get confirmation, kick off the experimentation.
 
 ## Experimentation
 
-Each experiment is an edit to `ai.py` followed by a head-to-head evaluation against the champion (`og_ai.py`). Evaluation runs **400 games** (sides swapped each game) with a **1s time limit per move** for both bots.
+Each experiment is an edit to `ai.py` followed by a head-to-head evaluation against the champion (`og_ai.py`). Evaluation runs **400 games** (sides swapped each game) with a **0.5s time limit per move** for both bots.
 
 You launch an evaluation like this:
 
 ```bash
-cd .. && python run_eval.py
+python ../run_eval.py
 ```
 
 If your bot class has been renamed, pass it as an argument:
 
 ```bash
-cd .. && python run_eval.py --new-class MyBot
+python ../run_eval.py --new-class MyBot
 ```
 
-Full options: `--new-module`, `--new-class`, `--old-module`, `--old-class`, `--games`, `--time-limit`. Defaults are `ai.MinimaxBot` vs `og_ai.MinimaxBot`, 400 games, 1s time limit.
+Full options: `--new-module`, `--new-class`, `--old-module`, `--old-class`, `--games`, `--time-limit`. Defaults are `ai.MinimaxBot` vs `og_ai.MinimaxBot`, 400 games, 0.5s time limit.
 
 `og_ai.py` must always be importable — never modify it directly.
 
@@ -62,7 +68,7 @@ Full options: `--new-module`, `--new-class`, `--old-module`, `--old-class`, `--g
 - Modify `game.py`, `bot.py`, or `evaluate.py`. They are read-only.
 - Modify `og_ai.py` directly. It is only updated by copying `ai.py` over it when a new champion is crowned.
 - Install new packages or add dependencies.
-- Change the time limit. Both bots always get **1s per move**.
+- Change the time limit. Both bots always get **0.5s per move**.
 
 **The goal is simple: achieve the highest win rate against the previous champion.** Everything in `ai.py` is fair game: add heuristics, change the search algorithm, improve move ordering, add an opening book, try MCTS, try neural evaluation — whatever works. The only constraint is that it runs without crashing and respects the 50ms time limit (the `Bot` base class and iterative deepening handle this).
 
@@ -126,7 +132,7 @@ LOOP FOREVER:
 1. Look at the git state: the current branch/commit we're on.
 2. Edit `ai.py` with an experimental idea.
 3. git commit `ai.py`.
-4. Run the evaluation: `cd .. && python -c "..."` — output goes straight into context, no log file needed.
+4. Run the evaluation: `python ../run_eval.py` — output goes straight into context, no log file needed.
 5. If the output is empty or shows a traceback, the run crashed. Attempt a fix. If you can't get things to work after a few attempts, give up on this idea.
 7. Record the results in the tsv. (NOTE: do not commit results.tsv — leave it untracked.)
 8. **Decide whether to keep or discard.** Use judgment, not a hard cutoff. A win rate around **55%+** is a clear improvement — keep it. But context matters:
@@ -144,6 +150,8 @@ LOOP FOREVER:
 **One change per experiment**: Each commit/experiment should test exactly one thing. Don't bundle multiple independent changes (e.g. new heuristic + move ordering + candidate narrowing) into a single experiment — it's impossible to tell what helped. Change one variable at a time so results are attributable.
 
 **Crashes**: If a run crashes, use your judgment. If it's a typo or simple bug, fix and re-run. If the idea is fundamentally broken, log it as `crash`, revert, and move on.
+
+**Suspiciously flat results**: If you're confident a change should help but the win rate is ~50%, suspect a bug — maybe the new code path isn't being reached, a sign is flipped, or a value is being overwritten. Investigate and re-run. However, spend a **maximum of 3 experiments per idea**. If it's still not working after 3 attempts, log the idea and what you tried in `ideas.md` and move on.
 
 **NEVER STOP**: Once the experiment loop has begun (after the initial setup), do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep or away and expects you to continue working *indefinitely* until manually stopped. You are autonomous. If you run out of ideas, think harder — re-read the game logic for new angles, research hex game heuristics, try combining previous near-misses, try radically different approaches. The loop runs until the human interrupts you, period.
 

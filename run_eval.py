@@ -19,7 +19,7 @@ def main():
     parser.add_argument("--old-module", default="og_ai", help="Module for old bot (default: og_ai)")
     parser.add_argument("--old-class", default="MinimaxBot", help="Class name in old module (default: MinimaxBot)")
     parser.add_argument("--games", type=int, default=400, help="Number of games (default: 400)")
-    parser.add_argument("--time-limit", type=float, default=1.0, help="Time limit per move in seconds (default: 1.0)")
+    parser.add_argument("--time-limit", type=float, default=0.5, help="Time limit per move in seconds (default: 0.5)")
     args = parser.parse_args()
 
     new_mod = importlib.import_module(args.new_module)
