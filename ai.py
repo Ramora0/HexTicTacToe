@@ -26,7 +26,7 @@ def hex_distance(dq, dr):
 # Longer lines are exponentially more valuable
 LINE_SCORES = [0, 1, 10, 100, 1000, 10000, 100000]
 # Defensive multipliers per count — higher counts need more urgent blocking
-_DEF_MULT = [0, 1.0, 1.0, 1.5, 1.5, 2.0, 1.0]
+_DEF_MULT = [0, 1.0, 1.0, 1.2, 1.5, 2.0, 1.0]
 
 
 # Zobrist hash table — random 64-bit values for each (cell, player) pair
@@ -53,6 +53,8 @@ def evaluate_position(game, player):
     """
     opponent = Player.B if player == Player.A else Player.A
     score = 0
+    my_threats = 0  # windows with 4+ own stones
+    opp_threats = 0  # windows with 4+ opponent stones
 
     # For each direction, walk all lines through the board
     for dq, dr in HEX_DIRECTIONS:
@@ -81,8 +83,18 @@ def evaluate_position(game, player):
                 opp_count = window.count(opponent)
                 if my_count > 0 and opp_count == 0:
                     score += LINE_SCORES[my_count]
+                    if my_count >= 4:
+                        my_threats += 1
                 elif opp_count > 0 and my_count == 0:
                     score -= int(LINE_SCORES[opp_count] * _DEF_MULT[opp_count])
+                    if opp_count >= 4:
+                        opp_threats += 1
+
+    # Double threat bonus: fork is nearly unblockable
+    if my_threats >= 2:
+        score += 50000
+    if opp_threats >= 2:
+        score -= 50000
 
     return score
 
