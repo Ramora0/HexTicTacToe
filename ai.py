@@ -68,8 +68,31 @@ def evaluate_position(game, player):
     return score
 
 
-def get_candidates(game):
-    """Return empty cells within hex-distance 2 of any occupied cell."""
+def score_candidate(game, q, r, player):
+    """Quick heuristic score for move ordering. Counts line potential."""
+    opponent = Player.B if player == Player.A else Player.A
+    score = 0
+    for dq, dr in HEX_DIRECTIONS:
+        my_count = 0
+        opp_count = 0
+        for sign in (1, -1):
+            for dist in range(1, 6):
+                nq, nr = q + sign * dq * dist, r + sign * dr * dist
+                cell = game.board.get((nq, nr))
+                if cell == player:
+                    my_count += 1
+                elif cell == opponent:
+                    opp_count += 1
+                    break
+                else:
+                    break
+        # Extending own lines is good, blocking opponent lines is also good
+        score += my_count * my_count + opp_count * opp_count
+    return score
+
+
+def get_candidates(game, player=None):
+    """Return empty cells within hex-distance 2 of any occupied cell, ordered by heuristic."""
     occupied = [pos for pos, p in game.board.items() if p != Player.NONE]
     if not occupied:
         return [(0, 0)]
@@ -82,6 +105,11 @@ def get_candidates(game):
                     nq, nr = q + dq, r + dr
                     if (nq, nr) in game.board and game.board[(nq, nr)] == Player.NONE:
                         candidates.add((nq, nr))
+
+    if player is not None:
+        scored = [(score_candidate(game, q, r, player), q, r) for q, r in candidates]
+        scored.sort(reverse=True)
+        return [(q, r) for _, q, r in scored]
     return list(candidates)
 
 
@@ -99,11 +127,10 @@ class MinimaxBot(Bot):
         self._nodes = 0
         self.last_depth = 0
 
-        candidates = get_candidates(game)
+        candidates = get_candidates(game, self._player)
         if len(candidates) == 1:
             return candidates[0]
 
-        random.shuffle(candidates)
         best_move = candidates[0]
 
         saved_board = dict(game.board)
@@ -162,7 +189,7 @@ class MinimaxBot(Bot):
         if depth == 0:
             return evaluate_position(game, self._player)
 
-        candidates = get_candidates(game)
+        candidates = get_candidates(game, game.current_player)
         maximizing = game.current_player == self._player
 
         if maximizing:
