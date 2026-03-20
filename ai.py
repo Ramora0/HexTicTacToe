@@ -134,36 +134,8 @@ class MinimaxBot(Bot):
         if len(candidates) == 1:
             return candidates[0]
 
-        # Quick win/block check: try each candidate for instant win or opponent win
-        player = game.current_player
-        opponent = Player.B if player == Player.A else Player.A
-        block_move = None
-        for q, r in candidates:
-            state = game.save_state()
-            game.make_move(q, r)
-            if game.game_over and game.winner == player:
-                game.undo_move(q, r, state)
-                self.last_depth = 1
-                return (q, r)
-            game.undo_move(q, r, state)
-        # Check if opponent can win on any cell (need to block)
-        if block_move is None:
-            for q, r in candidates:
-                # Temporarily place opponent's stone
-                game.board[(q, r)] = opponent
-                game.move_count += 1
-                if game._check_win(q, r):
-                    block_move = (q, r)
-                game.board[(q, r)] = Player.NONE
-                game.move_count -= 1
-                game.winner = Player.NONE
-                game.winning_cells = []
-                game.game_over = False
-                if block_move:
-                    break
-
         random.shuffle(candidates)
-        best_move = block_move if block_move else candidates[0]
+        best_move = candidates[0]
 
         saved_board = dict(game.board)
         saved_state = game.save_state()
@@ -283,11 +255,16 @@ class MinimaxBot(Bot):
 
         if maximizing:
             value = -math.inf
-            for q, r in ordered:
+            for i, (q, r) in enumerate(ordered):
                 player = game.current_player
                 state = game.save_state()
                 self._make(game, q, r)
-                child_val = self._minimax(game, depth - 1, alpha, beta)
+                # LMR: reduce depth for late moves (after first 5)
+                d = depth - 1 if i < 5 or depth <= 2 else depth - 2
+                child_val = self._minimax(game, d, alpha, beta)
+                # Re-search at full depth if reduced search improves alpha
+                if d < depth - 1 and child_val > alpha:
+                    child_val = self._minimax(game, depth - 1, alpha, beta)
                 self._undo(game, q, r, state, player)
                 if child_val > value:
                     value = child_val
@@ -297,11 +274,14 @@ class MinimaxBot(Bot):
                     break
         else:
             value = math.inf
-            for q, r in ordered:
+            for i, (q, r) in enumerate(ordered):
                 player = game.current_player
                 state = game.save_state()
                 self._make(game, q, r)
-                child_val = self._minimax(game, depth - 1, alpha, beta)
+                d = depth - 1 if i < 5 or depth <= 2 else depth - 2
+                child_val = self._minimax(game, d, alpha, beta)
+                if d < depth - 1 and child_val < beta:
+                    child_val = self._minimax(game, depth - 1, alpha, beta)
                 self._undo(game, q, r, state, player)
                 if child_val < value:
                     value = child_val
