@@ -142,9 +142,24 @@ class MinimaxBot(Bot):
         saved_move_count = game.move_count
         saved_hash = self._hash
 
+        prev_score = 0
+        asp_window = 50
         for depth in range(1, 200):
             try:
-                best_move = self._search_root(game, candidates, depth)
+                if depth >= 3:
+                    # Aspiration window search
+                    a = prev_score - asp_window
+                    b = prev_score + asp_window
+                    move, score = self._search_root(game, candidates, depth, a, b)
+                    if score <= a or score >= b:
+                        # Re-search with full window
+                        move, score = self._search_root(game, candidates, depth)
+                    best_move = move
+                    prev_score = score
+                else:
+                    move, score = self._search_root(game, candidates, depth)
+                    best_move = move
+                    prev_score = score
                 self.last_depth = depth
             except TimeUp:
                 game.board = saved_board
@@ -175,11 +190,9 @@ class MinimaxBot(Bot):
     def _tt_key(self, game):
         return (self._hash, game.current_player, game.moves_left_in_turn)
 
-    def _search_root(self, game, candidates, depth):
+    def _search_root(self, game, candidates, depth, alpha=-math.inf, beta=math.inf):
         maximizing = game.current_player == self._player
         best_move = candidates[0]
-        alpha = -math.inf
-        beta = math.inf
 
         # Move ordering: TT best move first
         tt_entry = self._tt.get(self._tt_key(game))
@@ -207,7 +220,7 @@ class MinimaxBot(Bot):
         # Store root result in TT
         best_score = alpha if maximizing else beta
         self._tt[self._tt_key(game)] = (depth, best_score, _EXACT, best_move)
-        return best_move
+        return best_move, best_score
 
     def _minimax(self, game, depth, alpha, beta):
         self._check_time()
@@ -255,16 +268,11 @@ class MinimaxBot(Bot):
 
         if maximizing:
             value = -math.inf
-            for i, (q, r) in enumerate(ordered):
+            for q, r in ordered:
                 player = game.current_player
                 state = game.save_state()
                 self._make(game, q, r)
-                # LMR: reduce depth for late moves (after first 5)
-                d = depth - 1 if i < 5 or depth <= 2 else depth - 2
-                child_val = self._minimax(game, d, alpha, beta)
-                # Re-search at full depth if reduced search improves alpha
-                if d < depth - 1 and child_val > alpha:
-                    child_val = self._minimax(game, depth - 1, alpha, beta)
+                child_val = self._minimax(game, depth - 1, alpha, beta)
                 self._undo(game, q, r, state, player)
                 if child_val > value:
                     value = child_val
@@ -274,14 +282,11 @@ class MinimaxBot(Bot):
                     break
         else:
             value = math.inf
-            for i, (q, r) in enumerate(ordered):
+            for q, r in ordered:
                 player = game.current_player
                 state = game.save_state()
                 self._make(game, q, r)
-                d = depth - 1 if i < 5 or depth <= 2 else depth - 2
-                child_val = self._minimax(game, d, alpha, beta)
-                if d < depth - 1 and child_val < beta:
-                    child_val = self._minimax(game, depth - 1, alpha, beta)
+                child_val = self._minimax(game, depth - 1, alpha, beta)
                 self._undo(game, q, r, state, player)
                 if child_val < value:
                     value = child_val
