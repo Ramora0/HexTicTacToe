@@ -263,7 +263,6 @@ class MinimaxBot(Bot):
         # Update incremental eval via window counts + detect win
         st = self._score_table
         wc = self._wc
-        es = self._eval_score
         won = False
         if player == Player.A:
             for d_idx, oq, or_ in _WINDOW_OFFSETS:
@@ -273,7 +272,7 @@ class MinimaxBot(Bot):
                     counts = [0, 0]
                     wc[wkey] = counts
                 a, b = counts[0], counts[1]
-                es += st[a + 1][b] - st[a][b]
+                self._eval_score += st[a + 1][b] - st[a][b]
                 counts[0] = a + 1
                 if a + 1 == _WIN_LENGTH and b == 0:
                     won = True
@@ -285,11 +284,10 @@ class MinimaxBot(Bot):
                     counts = [0, 0]
                     wc[wkey] = counts
                 a, b = counts[0], counts[1]
-                es += st[a][b + 1] - st[a][b]
+                self._eval_score += st[a][b + 1] - st[a][b]
                 counts[1] = b + 1
                 if b + 1 == _WIN_LENGTH and a == 0:
                     won = True
-        self._eval_score = es
 
         # Update candidates: (q, r) is now occupied
         self._cand_set.discard((q, r))
@@ -330,22 +328,20 @@ class MinimaxBot(Bot):
         # Undo incremental eval via window counts
         st = self._score_table
         wc = self._wc
-        es = self._eval_score
         if player == Player.A:
             for d_idx, oq, or_ in _WINDOW_OFFSETS:
                 wkey = (d_idx, q - oq, r - or_)
                 counts = wc[wkey]
                 a, b = counts[0], counts[1]
-                es += st[a - 1][b] - st[a][b]
+                self._eval_score += st[a - 1][b] - st[a][b]
                 counts[0] = a - 1
         else:
             for d_idx, oq, or_ in _WINDOW_OFFSETS:
                 wkey = (d_idx, q - oq, r - or_)
                 counts = wc[wkey]
                 a, b = counts[0], counts[1]
-                es += st[a][b - 1] - st[a][b]
+                self._eval_score += st[a][b - 1] - st[a][b]
                 counts[1] = b - 1
-        self._eval_score = es
 
         # Undo candidates: (q, r) is empty again
         rc = self._cand_refcount
@@ -446,13 +442,18 @@ class MinimaxBot(Bot):
                 player = game.current_player
                 state = (player, game.moves_left_in_turn, game.winner, game.game_over)
                 self._make(game, q, r)
-                # LMR: reduce depth for late moves at sufficient depth
-                if i >= 3 and depth >= 3:
-                    child_val = self._minimax(game, depth - 2, alpha, beta)
-                    if child_val > alpha:
+                if i == 0:
+                    child_val = self._minimax(game, depth - 1, alpha, beta)
+                elif i >= 3 and depth >= 3:
+                    # LMR: reduced depth search
+                    child_val = self._minimax(game, depth - 2, alpha, alpha + 1)
+                    if alpha < child_val < beta:
                         child_val = self._minimax(game, depth - 1, alpha, beta)
                 else:
-                    child_val = self._minimax(game, depth - 1, alpha, beta)
+                    # PVS: null window search
+                    child_val = self._minimax(game, depth - 1, alpha, alpha + 1)
+                    if alpha < child_val < beta:
+                        child_val = self._minimax(game, depth - 1, alpha, beta)
                 self._undo(game, q, r, state, player)
                 if child_val > value:
                     value = child_val
@@ -467,13 +468,18 @@ class MinimaxBot(Bot):
                 player = game.current_player
                 state = (player, game.moves_left_in_turn, game.winner, game.game_over)
                 self._make(game, q, r)
-                # LMR: reduce depth for late moves at sufficient depth
-                if i >= 3 and depth >= 3:
-                    child_val = self._minimax(game, depth - 2, alpha, beta)
-                    if child_val < beta:
+                if i == 0:
+                    child_val = self._minimax(game, depth - 1, alpha, beta)
+                elif i >= 3 and depth >= 3:
+                    # LMR: reduced depth search
+                    child_val = self._minimax(game, depth - 2, beta - 1, beta)
+                    if alpha < child_val < beta:
                         child_val = self._minimax(game, depth - 1, alpha, beta)
                 else:
-                    child_val = self._minimax(game, depth - 1, alpha, beta)
+                    # PVS: null window search
+                    child_val = self._minimax(game, depth - 1, beta - 1, beta)
+                    if alpha < child_val < beta:
+                        child_val = self._minimax(game, depth - 1, alpha, beta)
                 self._undo(game, q, r, state, player)
                 if child_val < value:
                     value = child_val
