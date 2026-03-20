@@ -12,12 +12,13 @@
 - [ ] MCTS approach
 - [ ] Node priors
 - [ ] Consider both stones of a turn together in search
+- [ ] Transposition table with Zobrist hashing
 
 ## Tried
-(none yet)
+(fresh run - mar19b)
 
 ## Notes
-- 50ms time limit is very tight — need fast eval and narrow search
+- 1s time limit per move — decent budget for search
 - Board is 91 cells, branching factor can be huge — must prune aggressively
 - Connect6 literature relevant (6-in-a-row, 2 stones per turn)
 - The 2-stones-per-turn structure means threats work differently than standard connect games

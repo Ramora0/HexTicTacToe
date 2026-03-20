@@ -68,24 +68,20 @@ def evaluate_position(game, player):
     return score
 
 
-# The 6 hex neighbors at distance 1
-_HEX_NEIGHBORS = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, -1), (-1, 1)]
-
-
 def get_candidates(game):
-    """Return empty cells adjacent (distance 1) to any occupied cell."""
+    """Return empty cells within hex-distance 2 of any occupied cell."""
     occupied = [pos for pos, p in game.board.items() if p != Player.NONE]
     if not occupied:
         return [(0, 0)]
 
-    board = game.board
-    none = Player.NONE
     candidates = set()
     for q, r in occupied:
-        for dq, dr in _HEX_NEIGHBORS:
-            nq, nr = q + dq, r + dr
-            if (nq, nr) in board and board[(nq, nr)] == none:
-                candidates.add((nq, nr))
+        for dq in range(-2, 3):
+            for dr in range(-2, 3):
+                if hex_distance(dq, dr) <= 2:
+                    nq, nr = q + dq, r + dr
+                    if (nq, nr) in game.board and game.board[(nq, nr)] == Player.NONE:
+                        candidates.add((nq, nr))
     return list(candidates)
 
 
