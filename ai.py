@@ -83,15 +83,16 @@ def evaluate_position(game, player):
                     s = LINE_SCORES[my_count]
                     # Late game: boost high-count offensive windows
                     if my_count >= 4 and game.move_count > 10:
-                        s = int(s * 2.0)
+                        s = int(s * 1.5)
                     score += s
                 elif opp_count > 0 and my_count == 0:
                     s = LINE_SCORES[opp_count]
                     if opp_count >= 4 and game.move_count > 10:
-                        s = int(s * 2.0)
+                        s = int(s * 1.5)
                     score -= int(s * _DEF_MULT[opp_count])
 
-    return score
+    # Tiny noise to break eval ties
+    return score + random.randint(-1, 1)
 
 
 # Precomputed distance-2 offsets (18 cells, avoids hex_distance calls)
