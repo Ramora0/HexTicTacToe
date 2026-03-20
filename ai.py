@@ -53,8 +53,6 @@ def evaluate_position(game, player):
     """
     opponent = Player.B if player == Player.A else Player.A
     score = 0
-    my_threats = 0  # windows with 4+ own stones
-    opp_threats = 0  # windows with 4+ opponent stones
 
     # For each direction, walk all lines through the board
     for dq, dr in HEX_DIRECTIONS:
@@ -77,24 +75,20 @@ def evaluate_position(game, player):
                 cq += dq
                 cr += dr
             # Score all windows of length 6 in this line
-            for i in range(len(line) - 5):
-                window = line[i:i+6]
-                my_count = window.count(player)
-                opp_count = window.count(opponent)
+            n = len(line)
+            for i in range(n - 5):
+                my_count = 0
+                opp_count = 0
+                for j in range(i, i + 6):
+                    v = line[j]
+                    if v == player:
+                        my_count += 1
+                    elif v == opponent:
+                        opp_count += 1
                 if my_count > 0 and opp_count == 0:
                     score += LINE_SCORES[my_count]
-                    if my_count >= 4:
-                        my_threats += 1
                 elif opp_count > 0 and my_count == 0:
                     score -= int(LINE_SCORES[opp_count] * _DEF_MULT[opp_count])
-                    if opp_count >= 4:
-                        opp_threats += 1
-
-    # Double threat bonus: fork is nearly unblockable
-    if my_threats >= 2:
-        score += 50000
-    if opp_threats >= 2:
-        score -= 50000
 
     return score
 
