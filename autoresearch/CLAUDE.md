@@ -75,7 +75,9 @@ Full options: `--new-module`, `--new-class`, `--old-module`, `--old-class`, `--g
 
 **Simplicity criterion**: All else being equal, simpler is better. A marginal win-rate improvement that adds ugly complexity is not worth it. Removing something and getting equal or better results is a great outcome. Weigh the complexity cost against the improvement magnitude.
 
-**Parameter sweeps**: Experiments are cheap (~2 minutes each), so feel free to run small parameter sweeps when tuning important values. Keep sweeps to **~3 values** — e.g. if you add a heuristic weight, try 3 representative values rather than exhaustively searching. Pick the best, commit that, and move on. Don't sweep unimportant parameters.
+**One evaluation at a time**: Evaluations use all CPU cores via multiprocessing. Never run multiple evaluations in parallel — always wait for one to finish before starting the next, even during parameter sweeps.
+
+**Parameter tuning**: When a numeric change improves win rate, always explore the neighborhood. Push the value further — if that helps, keep going. Then try a smaller change in the same direction. Squeeze out the gains before moving on. Experiments are cheap (~2 minutes each), so spend 2–3 extra runs optimizing a value that's clearly helping. Don't sweep unimportant parameters, but always optimize when you've found a good direction.
 
 **Ideas tracking**: Check `autoresearch/ideas.md` at the start and periodically during the loop. Use it to keep track of overarching ideas, promising directions, and things to try next. Update it as you go — add new ideas that occur to you, mark ones you've tried, note which worked and which didn't. This prevents losing track of good ideas across many iterations.
 

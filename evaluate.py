@@ -9,6 +9,7 @@ import sys
 import time
 from collections import defaultdict
 from multiprocessing import Pool
+from tqdm import tqdm
 from game import HexGame, Player
 from bot import RandomBot
 from ai import MinimaxBot
@@ -124,7 +125,8 @@ def evaluate(bot_a, bot_b, num_games=100, radius=5, win_length=6, time_limit=0.5
     t0 = time.time()
 
     with Pool(workers) as pool:
-        for result in pool.imap_unordered(_play_one, args):
+        pbar = tqdm(pool.imap_unordered(_play_one, args), total=num_games, desc="Games", unit="game")
+        for result in pbar:
             winner, swapped, d_a, d_b, v_a, v_b, exceeded, t_a, t_b = result
 
             if exceeded:
@@ -163,8 +165,7 @@ def evaluate(bot_a, bot_b, num_games=100, radius=5, win_length=6, time_limit=0.5
                     draws += 1
 
             games_played += 1
-            if games_played % 10 == 0:
-                print(".", end="", flush=True)
+            pbar.set_postfix(A=bot_a_wins, B=bot_b_wins, D=draws)
 
     elapsed = time.time() - t0
     total = max(games_played, 1)

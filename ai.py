@@ -38,6 +38,51 @@ for _q in range(-5, 6):
             for _p in (Player.A, Player.B):
                 _zobrist[(_q, _r, _p)] = _zobrist_rng.getrandbits(64)
 
+# Pre-compute all 6-cell windows on the hex board and which windows each cell belongs to.
+# This allows O(1) incremental evaluation: when a stone is placed, only the ~18 windows
+# containing that cell need updating, instead of rescanning the entire board.
+def _precompute_windows(radius=5, win_length=6):
+    board_cells = set()
+    for q in range(-radius, radius + 1):
+        for r in range(-radius, radius + 1):
+            if abs(-q - r) <= radius:
+                board_cells.add((q, r))
+
+    cell_to_windows = {cell: [] for cell in board_cells}
+    all_windows = []
+
+    for dq, dr in HEX_DIRECTIONS:
+        visited = set()
+        for cell in sorted(board_cells):
+            if cell in visited:
+                continue
+            q, r = cell
+            while (q - dq, r - dr) in board_cells:
+                q -= dq
+                r -= dr
+            line = []
+            cq, cr = q, r
+            while (cq, cr) in board_cells:
+                visited.add((cq, cr))
+                line.append((cq, cr))
+                cq += dq
+                cr += dr
+            for i in range(len(line) - win_length + 1):
+                w_idx = len(all_windows)
+                all_windows.append(tuple(line[i:i + win_length]))
+                for c in line[i:i + win_length]:
+                    cell_to_windows[c].append(w_idx)
+
+    # Tuples for faster iteration
+    for cell in cell_to_windows:
+        cell_to_windows[cell] = tuple(cell_to_windows[cell])
+
+    return all_windows, cell_to_windows
+
+_ALL_WINDOWS, _CELL_TO_WINDOWS = _precompute_windows()
+_NUM_WINDOWS = len(_ALL_WINDOWS)
+
+
 # TT entry flags
 _EXACT = 0
 _LOWER = 1  # true value >= stored (beta cutoff)
@@ -137,6 +182,38 @@ class MinimaxBot(Bot):
             if p != Player.NONE:
                 self._hash ^= _zobrist[(pos[0], pos[1], p)]
 
+        # Build score lookup table for current player perspective.
+        # _score_table[a_count][b_count] = contribution of a window with
+        # that many A/B stones, from self._player's point of view.
+        self._score_table = [[0] * 7 for _ in range(7)]
+        for a in range(7):
+            for b in range(7):
+                if self._player == Player.A:
+                    my, opp = a, b
+                else:
+                    my, opp = b, a
+                if my > 0 and opp == 0:
+                    self._score_table[a][b] = LINE_SCORES[my]
+                elif opp > 0 and my == 0:
+                    self._score_table[a][b] = -LINE_SCORES[opp]
+
+        # Initialize incremental eval: count stones per window
+        self._w_a = [0] * _NUM_WINDOWS
+        self._w_b = [0] * _NUM_WINDOWS
+        for w_idx, cells in enumerate(_ALL_WINDOWS):
+            for cell in cells:
+                p = game.board[cell]
+                if p == Player.A:
+                    self._w_a[w_idx] += 1
+                elif p == Player.B:
+                    self._w_b[w_idx] += 1
+
+        # Compute initial eval score from window counts
+        self._eval_score = 0
+        st = self._score_table
+        for w_idx in range(_NUM_WINDOWS):
+            self._eval_score += st[self._w_a[w_idx]][self._w_b[w_idx]]
+
         candidates = get_candidates(game)
         if len(candidates) == 1:
             return candidates[0]
@@ -148,6 +225,9 @@ class MinimaxBot(Bot):
         saved_state = game.save_state()
         saved_move_count = game.move_count
         saved_hash = self._hash
+        saved_eval = self._eval_score
+        saved_wa = self._w_a[:]
+        saved_wb = self._w_b[:]
 
         for depth in range(1, 200):
             try:
@@ -159,6 +239,9 @@ class MinimaxBot(Bot):
                 (game.current_player, game.moves_left_in_turn,
                  game.winner, game.winning_cells, game.game_over) = saved_state
                 self._hash = saved_hash
+                self._eval_score = saved_eval
+                self._w_a = saved_wa
+                self._w_b = saved_wb
                 break
 
         return best_move
@@ -169,15 +252,41 @@ class MinimaxBot(Bot):
             raise TimeUp
 
     def _make(self, game, q, r):
-        """Make move and update Zobrist hash."""
+        """Make move and update Zobrist hash + incremental eval."""
         player = game.current_player
         self._hash ^= _zobrist[(q, r, player)]
+        st = self._score_table
+        if player == Player.A:
+            for w_idx in _CELL_TO_WINDOWS[(q, r)]:
+                a = self._w_a[w_idx]
+                b = self._w_b[w_idx]
+                self._eval_score += st[a + 1][b] - st[a][b]
+                self._w_a[w_idx] = a + 1
+        else:
+            for w_idx in _CELL_TO_WINDOWS[(q, r)]:
+                a = self._w_a[w_idx]
+                b = self._w_b[w_idx]
+                self._eval_score += st[a][b + 1] - st[a][b]
+                self._w_b[w_idx] = b + 1
         game.make_move(q, r)
 
     def _undo(self, game, q, r, state, player):
-        """Undo move and restore Zobrist hash."""
+        """Undo move and restore Zobrist hash + incremental eval."""
         game.undo_move(q, r, state)
         self._hash ^= _zobrist[(q, r, player)]
+        st = self._score_table
+        if player == Player.A:
+            for w_idx in _CELL_TO_WINDOWS[(q, r)]:
+                a = self._w_a[w_idx]
+                b = self._w_b[w_idx]
+                self._eval_score += st[a - 1][b] - st[a][b]
+                self._w_a[w_idx] = a - 1
+        else:
+            for w_idx in _CELL_TO_WINDOWS[(q, r)]:
+                a = self._w_a[w_idx]
+                b = self._w_b[w_idx]
+                self._eval_score += st[a][b - 1] - st[a][b]
+                self._w_b[w_idx] = b - 1
 
     def _tt_key(self, game):
         return (self._hash, game.current_player, game.moves_left_in_turn)
@@ -211,6 +320,7 @@ class MinimaxBot(Bot):
                 beta = score
                 best_move = (q, r)
 
+        best_score = alpha if maximizing else beta
         # Store root result in TT
         best_score = alpha if maximizing else beta
         self._tt[self._tt_key(game)] = (depth, best_score, _EXACT, best_move)
@@ -243,7 +353,7 @@ class MinimaxBot(Bot):
                     return tt_score
 
         if depth == 0:
-            score = evaluate_position(game, self._player)
+            score = self._eval_score
             self._tt[tt_key] = (0, score, _EXACT, None)
             return score
 
