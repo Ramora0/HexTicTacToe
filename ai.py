@@ -83,12 +83,6 @@ def evaluate_position(game, player):
                     score += LINE_SCORES[my_count]
                 elif opp_count > 0 and my_count == 0:
                     score -= int(LINE_SCORES[opp_count] * _DEF_MULT[opp_count])
-                elif my_count > 0 and opp_count > 0:
-                    # Dead window penalty: the player with more stones lost more potential
-                    if my_count > opp_count:
-                        score -= LINE_SCORES[my_count] // 4
-                    elif opp_count > my_count:
-                        score += LINE_SCORES[opp_count] // 4
 
     return score
 
@@ -140,7 +134,8 @@ class MinimaxBot(Bot):
         if len(candidates) == 1:
             return candidates[0]
 
-        random.shuffle(candidates)
+        # Order candidates by distance to center (closer first, deterministic)
+        candidates.sort(key=lambda c: max(abs(c[0]), abs(c[1]), abs(-c[0]-c[1])))
         best_move = candidates[0]
 
         saved_board = dict(game.board)
