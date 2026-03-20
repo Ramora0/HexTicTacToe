@@ -15,7 +15,9 @@
       "Bash(git stash*)",
       "Edit",
       "Write",
-      "Read"
+      "Read",
+      "Bash(python -c \":*)",
+      "Bash(cd:*)"
     ],
     "deny": [
       "Bash(git push*)",
