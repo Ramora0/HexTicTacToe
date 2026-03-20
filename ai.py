@@ -1,8 +1,9 @@
-"""Negamax bot with iterative deepening, heuristic eval, and transposition table.
+"""Minimax bot with iterative deepening, heuristic eval, and transposition table.
 
 Uses alpha-beta pruning with Zobrist hashing for a transposition table.
-Negamax simplifies minimax by always scoring from the current player's
-perspective and negating at each level.
+The TT avoids re-evaluating positions reached via different move orders
+(especially common with 2-stones-per-turn) and provides move ordering
+from previous iterations.
 """
 
 import math
@@ -42,19 +43,28 @@ _UPPER = 2  # true value <= stored (failed low)
 
 
 def evaluate_position(game, player):
-    """Score the position from player's perspective."""
+    """Score the position from player's perspective.
+
+    For each line direction, scan every possible 6-cell window and count
+    how many belong to each player. A window with stones from both players
+    is dead (score 0). Otherwise score based on count.
+    """
     opponent = Player.B if player == Player.A else Player.A
     score = 0
 
+    # For each direction, walk all lines through the board
     for dq, dr in HEX_DIRECTIONS:
+        # Find all starting cells: cells with no predecessor in this direction
         visited = set()
         for cell in game.board:
             if cell in visited:
                 continue
+            # Walk backward to find the start of this line
             q, r = cell
             while (q - dq, r - dr) in game.board:
                 q -= dq
                 r -= dr
+            # Now walk forward, collecting the full line
             line = []
             cq, cr = q, r
             while (cq, cr) in game.board:
@@ -62,6 +72,7 @@ def evaluate_position(game, player):
                 line.append(game.board[(cq, cr)])
                 cq += dq
                 cr += dr
+            # Score all windows of length 6 in this line
             for i in range(len(line) - 5):
                 window = line[i:i+6]
                 my_count = window.count(player)
@@ -74,8 +85,11 @@ def evaluate_position(game, player):
     return score
 
 
+_NEIGHBOR_OFFSETS = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, -1), (-1, 1)]
+
+
 def get_candidates(game):
-    """Return empty cells within hex-distance 2 of any occupied cell."""
+    """Return empty cells within hex-distance 2 of any occupied cell, sorted by neighbor count."""
     occupied = [pos for pos, p in game.board.items() if p != Player.NONE]
     if not occupied:
         return [(0, 0)]
@@ -88,11 +102,23 @@ def get_candidates(game):
                     nq, nr = q + dq, r + dr
                     if (nq, nr) in game.board and game.board[(nq, nr)] == Player.NONE:
                         candidates.add((nq, nr))
-    return list(candidates)
+
+    # Sort by number of occupied neighbors (descending) — cheap move ordering
+    board = game.board
+    def neighbor_count(cell):
+        q, r = cell
+        count = 0
+        for dq, dr in _NEIGHBOR_OFFSETS:
+            n = board.get((q + dq, r + dr))
+            if n is not None and n != Player.NONE:
+                count += 1
+        return count
+
+    return sorted(candidates, key=neighbor_count, reverse=True)
 
 
 class MinimaxBot(Bot):
-    """Iterative-deepening negamax with alpha-beta pruning, TT, and heuristic eval."""
+    """Iterative-deepening minimax with alpha-beta pruning, TT, and heuristic eval."""
 
     def __init__(self, time_limit=0.05):
         super().__init__(time_limit)
@@ -103,6 +129,7 @@ class MinimaxBot(Bot):
 
     def get_move(self, game):
         self._deadline = time.time() + self.time_limit
+        self._player = game.current_player
         self._nodes = 0
         self.last_depth = 0
         self._tt.clear()
@@ -159,6 +186,7 @@ class MinimaxBot(Bot):
         return (self._hash, game.current_player, game.moves_left_in_turn)
 
     def _search_root(self, game, candidates, depth):
+        maximizing = game.current_player == self._player
         best_move = candidates[0]
         alpha = -math.inf
         beta = math.inf
@@ -171,33 +199,34 @@ class MinimaxBot(Bot):
         else:
             ordered = candidates
 
-        cur_player = game.current_player
         for q, r in ordered:
             self._check_time()
             player = game.current_player
             state = game.save_state()
             self._make(game, q, r)
-            # If the next player is the same (2nd stone of turn), don't negate
-            if game.current_player == cur_player:
-                score = self._negamax(game, depth - 1, alpha, beta)
-            else:
-                score = -self._negamax(game, depth - 1, -beta, -alpha)
+            score = self._minimax(game, depth - 1, alpha, beta)
             self._undo(game, q, r, state, player)
 
-            if score > alpha:
+            if maximizing and score > alpha:
                 alpha = score
                 best_move = (q, r)
+            elif not maximizing and score < beta:
+                beta = score
+                best_move = (q, r)
 
-        self._tt[self._tt_key(game)] = (depth, alpha, _EXACT, best_move)
+        # Store root result in TT
+        best_score = alpha if maximizing else beta
+        self._tt[self._tt_key(game)] = (depth, best_score, _EXACT, best_move)
         return best_move
 
-    def _negamax(self, game, depth, alpha, beta):
+    def _minimax(self, game, depth, alpha, beta):
         self._check_time()
 
         if game.game_over:
-            if game.winner != Player.NONE:
-                # Winner is current_player (make_move doesn't switch on win)
+            if game.winner == self._player:
                 return 100000000
+            elif game.winner != Player.NONE:
+                return -100000000
             return 0
 
         # TT lookup
@@ -217,43 +246,56 @@ class MinimaxBot(Bot):
                     return tt_score
 
         if depth == 0:
-            score = evaluate_position(game, game.current_player)
+            score = evaluate_position(game, self._player)
             self._tt[tt_key] = (0, score, _EXACT, None)
             return score
 
         orig_alpha = alpha
+        orig_beta = beta
         candidates = get_candidates(game)
 
+        # Move ordering: TT move first
         if tt_move:
             ordered = [tt_move] + [m for m in candidates if m != tt_move]
         else:
             ordered = candidates
 
-        cur_player = game.current_player
-        value = -math.inf
+        maximizing = game.current_player == self._player
         best_move = None
 
-        for q, r in ordered:
-            player = game.current_player
-            state = game.save_state()
-            self._make(game, q, r)
-            # If the next player is the same (2nd stone of turn), don't negate
-            if game.current_player == cur_player:
-                child_val = self._negamax(game, depth - 1, alpha, beta)
-            else:
-                child_val = -self._negamax(game, depth - 1, -beta, -alpha)
-            self._undo(game, q, r, state, player)
-            if child_val > value:
-                value = child_val
-                best_move = (q, r)
-            alpha = max(alpha, value)
-            if alpha >= beta:
-                break
+        if maximizing:
+            value = -math.inf
+            for q, r in ordered:
+                player = game.current_player
+                state = game.save_state()
+                self._make(game, q, r)
+                child_val = self._minimax(game, depth - 1, alpha, beta)
+                self._undo(game, q, r, state, player)
+                if child_val > value:
+                    value = child_val
+                    best_move = (q, r)
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+        else:
+            value = math.inf
+            for q, r in ordered:
+                player = game.current_player
+                state = game.save_state()
+                self._make(game, q, r)
+                child_val = self._minimax(game, depth - 1, alpha, beta)
+                self._undo(game, q, r, state, player)
+                if child_val < value:
+                    value = child_val
+                    best_move = (q, r)
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
 
         # Determine TT flag
         if value <= orig_alpha:
             flag = _UPPER
-        elif value >= beta:
+        elif value >= orig_beta:
             flag = _LOWER
         else:
             flag = _EXACT
