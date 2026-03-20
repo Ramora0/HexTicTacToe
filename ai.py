@@ -127,6 +127,7 @@ class MinimaxBot(Bot):
         self._tt = {}
         self._hash = 0
         self._rc_stack = []
+        self._history = {}
 
     def get_move(self, game):
         self._deadline = time.time() + self.time_limit
@@ -425,7 +426,9 @@ class MinimaxBot(Bot):
         orig_beta = beta
         candidates = list(self._cand_set)
 
-        # Move ordering: TT best move first (swap to front, no new list)
+        # Move ordering: history heuristic, then TT move to front
+        history = self._history
+        candidates.sort(key=lambda m: history.get(m, 0), reverse=True)
         if tt_move in self._cand_set:
             idx = candidates.index(tt_move)
             candidates[0], candidates[idx] = candidates[idx], candidates[0]
@@ -446,6 +449,7 @@ class MinimaxBot(Bot):
                     best_move = (q, r)
                 alpha = max(alpha, value)
                 if alpha >= beta:
+                    history[(q, r)] = history.get((q, r), 0) + depth * depth
                     break
         else:
             value = math.inf
@@ -460,6 +464,7 @@ class MinimaxBot(Bot):
                     best_move = (q, r)
                 beta = min(beta, value)
                 if alpha >= beta:
+                    history[(q, r)] = history.get((q, r), 0) + depth * depth
                     break
 
         # Determine TT flag
