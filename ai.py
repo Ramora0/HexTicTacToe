@@ -26,7 +26,7 @@ def hex_distance(dq, dr):
 # Longer lines are exponentially more valuable
 LINE_SCORES = [0, 1, 10, 100, 1000, 10000, 100000]
 # Defensive multipliers per count — higher counts need more urgent blocking
-_DEF_MULT = [0, 1.0, 1.0, 1.2, 1.5, 2.0, 1.0]
+_DEF_MULT = [0, 1.0, 1.0, 1.5, 1.5, 2.0, 1.0]
 
 
 # Zobrist hash table — random 64-bit values for each (cell, player) pair
@@ -142,24 +142,9 @@ class MinimaxBot(Bot):
         saved_move_count = game.move_count
         saved_hash = self._hash
 
-        prev_score = 0
-        asp_window = 50
         for depth in range(1, 200):
             try:
-                if depth >= 3:
-                    # Aspiration window search
-                    a = prev_score - asp_window
-                    b = prev_score + asp_window
-                    move, score = self._search_root(game, candidates, depth, a, b)
-                    if score <= a or score >= b:
-                        # Re-search with full window
-                        move, score = self._search_root(game, candidates, depth)
-                    best_move = move
-                    prev_score = score
-                else:
-                    move, score = self._search_root(game, candidates, depth)
-                    best_move = move
-                    prev_score = score
+                best_move = self._search_root(game, candidates, depth)
                 self.last_depth = depth
             except TimeUp:
                 game.board = saved_board
@@ -190,9 +175,11 @@ class MinimaxBot(Bot):
     def _tt_key(self, game):
         return (self._hash, game.current_player, game.moves_left_in_turn)
 
-    def _search_root(self, game, candidates, depth, alpha=-math.inf, beta=math.inf):
+    def _search_root(self, game, candidates, depth):
         maximizing = game.current_player == self._player
         best_move = candidates[0]
+        alpha = -math.inf
+        beta = math.inf
 
         # Move ordering: TT best move first
         tt_entry = self._tt.get(self._tt_key(game))
@@ -220,7 +207,7 @@ class MinimaxBot(Bot):
         # Store root result in TT
         best_score = alpha if maximizing else beta
         self._tt[self._tt_key(game)] = (depth, best_score, _EXACT, best_move)
-        return best_move, best_score
+        return best_move
 
     def _minimax(self, game, depth, alpha, beta):
         self._check_time()
