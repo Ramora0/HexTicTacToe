@@ -2,6 +2,8 @@
 
 This is an experiment to have the LLM autonomously improve a game-playing bot.
 
+python -c "import random; from bot import Bot, RandomBot; from game import Player; from ai import get_candidates; from evaluate import evaluate; CandidateRandomBot = type('CandidateRandomBot', (Bot,), {'get_move': lambda self, game: (setattr(self, 'last_depth', 0), random.choice(get_candidates(game)))[1]}); evaluate(CandidateRandomBot(time_limit=0.5), RandomBot(time_limit=0.5), num_games=200)"
+
 ## Game rules
 
 Hex Tic-Tac-Toe is played on a hexagonal board of radius 5 (91 cells) using axial coordinates. Two players (A and B) take turns placing stones:
