@@ -24,7 +24,7 @@ def hex_distance(dq, dr):
 
 # Scores for contiguous groups of length N (index = count)
 # Longer lines are exponentially more valuable
-LINE_SCORES = [0, 1, 10, 100, 2000, 50000, 100000]
+LINE_SCORES = [0, 1, 10, 100, 1000, 10000, 100000]
 
 
 # Zobrist hash table — random 64-bit values for each (cell, player) pair
@@ -78,9 +78,9 @@ def evaluate_position(game, player):
                 my_count = window.count(player)
                 opp_count = window.count(opponent)
                 if my_count > 0 and opp_count == 0:
-                    score += LINE_SCORES[my_count]
+                    score += int(LINE_SCORES[my_count] * 1.2)
                 elif opp_count > 0 and my_count == 0:
-                    score -= int(LINE_SCORES[opp_count] * 1.2)
+                    score -= LINE_SCORES[opp_count]
 
     return score
 
