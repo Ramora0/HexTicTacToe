@@ -13,6 +13,9 @@
 - [ ] Consider both stones of a turn together in search
 - [ ] Different TT replacement policy (depth-preferred vs always-replace)
 - [ ] Null move heuristic (adapted for 2-stone turns)
+- [ ] Negamax refactor (simpler, fewer branches in code)
+- [ ] Tune LINE_SCORES weights (current 10x growth may be too aggressive)
+- [ ] Defensive asymmetry — weight opponent threats more than own
 
 ## Kept improvements (in order)
 1. Heuristic eval — 100% win rate

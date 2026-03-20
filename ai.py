@@ -82,6 +82,14 @@ def _precompute_windows(radius=5, win_length=6):
 _ALL_WINDOWS, _CELL_TO_WINDOWS = _precompute_windows()
 _NUM_WINDOWS = len(_ALL_WINDOWS)
 
+# Pre-compute the 18 neighbor offsets within hex-distance 2 (excluding self)
+_NEIGHBOR_OFFSETS_2 = tuple(
+    (dq, dr)
+    for dq in range(-2, 3)
+    for dr in range(-2, 3)
+    if hex_distance(dq, dr) <= 2 and (dq, dr) != (0, 0)
+)
+
 
 # TT entry flags
 _EXACT = 0
@@ -214,12 +222,30 @@ class MinimaxBot(Bot):
         for w_idx in range(_NUM_WINDOWS):
             self._eval_score += st[self._w_a[w_idx]][self._w_b[w_idx]]
 
-        candidates = get_candidates(game)
+        # Initialize incremental candidate set with reference counting.
+        # _cand_refcount[cell] = number of occupied cells within distance 2.
+        # _cand_set = empty cells with refcount > 0.
+        self._cand_refcount = {pos: 0 for pos in game.board}
+        for pos, p in game.board.items():
+            if p != Player.NONE:
+                for dq, dr in _NEIGHBOR_OFFSETS_2:
+                    nb = (pos[0] + dq, pos[1] + dr)
+                    if nb in self._cand_refcount:
+                        self._cand_refcount[nb] += 1
+        self._cand_set = set()
+        for pos, p in game.board.items():
+            if p == Player.NONE and self._cand_refcount[pos] > 0:
+                self._cand_set.add(pos)
+
+        if not self._cand_set:
+            return (0, 0)
+        candidates = list(self._cand_set)
         if len(candidates) == 1:
             return candidates[0]
 
         random.shuffle(candidates)
         best_move = candidates[0]
+        maximizing = game.current_player == self._player
 
         saved_board = dict(game.board)
         saved_state = game.save_state()
@@ -228,11 +254,15 @@ class MinimaxBot(Bot):
         saved_eval = self._eval_score
         saved_wa = self._w_a[:]
         saved_wb = self._w_b[:]
+        saved_cand_set = set(self._cand_set)
+        saved_cand_rc = dict(self._cand_refcount)
 
         for depth in range(1, 200):
             try:
-                best_move = self._search_root(game, candidates, depth)
+                best_move, scores = self._search_root(game, candidates, depth)
                 self.last_depth = depth
+                # Reorder candidates for next iteration: best-scoring first
+                candidates.sort(key=lambda m: scores[m], reverse=maximizing)
             except TimeUp:
                 game.board = saved_board
                 game.move_count = saved_move_count
@@ -242,6 +272,8 @@ class MinimaxBot(Bot):
                 self._eval_score = saved_eval
                 self._w_a = saved_wa
                 self._w_b = saved_wb
+                self._cand_set = saved_cand_set
+                self._cand_refcount = saved_cand_rc
                 break
 
         return best_move
@@ -252,7 +284,7 @@ class MinimaxBot(Bot):
             raise TimeUp
 
     def _make(self, game, q, r):
-        """Make move and update Zobrist hash + incremental eval."""
+        """Make move and update Zobrist hash, incremental eval, and candidates."""
         player = game.current_player
         self._hash ^= _zobrist[(q, r, player)]
         st = self._score_table
@@ -268,10 +300,20 @@ class MinimaxBot(Bot):
                 b = self._w_b[w_idx]
                 self._eval_score += st[a][b + 1] - st[a][b]
                 self._w_b[w_idx] = b + 1
+        # Update candidates: (q, r) is now occupied
+        self._cand_set.discard((q, r))
+        rc = self._cand_refcount
+        board = game.board
+        for dq, dr in _NEIGHBOR_OFFSETS_2:
+            nb = (q + dq, r + dr)
+            if nb in rc:
+                rc[nb] += 1
+                if board[nb] == Player.NONE:
+                    self._cand_set.add(nb)
         game.make_move(q, r)
 
     def _undo(self, game, q, r, state, player):
-        """Undo move and restore Zobrist hash + incremental eval."""
+        """Undo move and restore Zobrist hash, incremental eval, and candidates."""
         game.undo_move(q, r, state)
         self._hash ^= _zobrist[(q, r, player)]
         st = self._score_table
@@ -287,31 +329,36 @@ class MinimaxBot(Bot):
                 b = self._w_b[w_idx]
                 self._eval_score += st[a][b - 1] - st[a][b]
                 self._w_b[w_idx] = b - 1
+        # Undo candidates: (q, r) is empty again
+        rc = self._cand_refcount
+        for dq, dr in _NEIGHBOR_OFFSETS_2:
+            nb = (q + dq, r + dr)
+            if nb in rc:
+                rc[nb] -= 1
+                if rc[nb] == 0:
+                    self._cand_set.discard(nb)
+        if rc[(q, r)] > 0:
+            self._cand_set.add((q, r))
 
     def _tt_key(self, game):
         return (self._hash, game.current_player, game.moves_left_in_turn)
 
     def _search_root(self, game, candidates, depth):
+        """Search all root moves. Returns (best_move, {move: score}) tuple."""
         maximizing = game.current_player == self._player
         best_move = candidates[0]
         alpha = -math.inf
         beta = math.inf
 
-        # Move ordering: TT best move first
-        tt_entry = self._tt.get(self._tt_key(game))
-        if tt_entry and tt_entry[3]:
-            tt_move = tt_entry[3]
-            ordered = [tt_move] + [m for m in candidates if m != tt_move]
-        else:
-            ordered = candidates
-
-        for q, r in ordered:
+        scores = {}
+        for q, r in candidates:
             self._check_time()
             player = game.current_player
             state = game.save_state()
             self._make(game, q, r)
             score = self._minimax(game, depth - 1, alpha, beta)
             self._undo(game, q, r, state, player)
+            scores[(q, r)] = score
 
             if maximizing and score > alpha:
                 alpha = score
@@ -324,7 +371,7 @@ class MinimaxBot(Bot):
         # Store root result in TT
         best_score = alpha if maximizing else beta
         self._tt[self._tt_key(game)] = (depth, best_score, _EXACT, best_move)
-        return best_move
+        return best_move, scores
 
     def _minimax(self, game, depth, alpha, beta):
         self._check_time()
@@ -359,7 +406,7 @@ class MinimaxBot(Bot):
 
         orig_alpha = alpha
         orig_beta = beta
-        candidates = get_candidates(game)
+        candidates = list(self._cand_set)
 
         # Move ordering: TT move first
         if tt_move:

@@ -44,7 +44,7 @@ Once you get confirmation, kick off the experimentation.
 
 ## Experimentation
 
-Each experiment is an edit to `ai.py` followed by a head-to-head evaluation against the champion (`og_ai.py`). Evaluation runs **400 games** (sides swapped each game) with a **0.5s time limit per move** for both bots.
+Each experiment is an edit to `ai.py` followed by a head-to-head evaluation against the champion (`og_ai.py`). Evaluation runs **400 games** (sides swapped each game) with a **0.1s time limit per move** for both bots.
 
 You launch an evaluation like this:
 
@@ -58,7 +58,7 @@ If your bot class has been renamed, pass it as an argument:
 python ../run_eval.py --new-class MyBot
 ```
 
-Full options: `--new-module`, `--new-class`, `--old-module`, `--old-class`, `--games`, `--time-limit`. Defaults are `ai.MinimaxBot` vs `og_ai.MinimaxBot`, 400 games, 0.5s time limit.
+Full options: `--new-module`, `--new-class`, `--old-module`, `--old-class`, `--games`, `--time-limit`. Defaults are `ai.MinimaxBot` vs `og_ai.MinimaxBot`, 400 games, 0.1s time limit.
 
 `og_ai.py` must always be importable — never modify it directly.
 
@@ -69,7 +69,7 @@ Full options: `--new-module`, `--new-class`, `--old-module`, `--old-class`, `--g
 - Modify `game.py`, `bot.py`, or `evaluate.py`. They are read-only.
 - Modify `og_ai.py` directly. It is only updated by copying `ai.py` over it when a new champion is crowned.
 - Install new packages or add dependencies.
-- Change the time limit. Both bots always get **0.5s per move**.
+- Change the time limit. Both bots always get **0.1s per move**.
 
 **The goal is simple: achieve the highest win rate against the previous champion.** Everything in `ai.py` is fair game: add heuristics, change the search algorithm, improve move ordering, add an opening book, try MCTS, try neural evaluation — whatever works. The only constraint is that it runs without crashing and respects the 50ms time limit (the `Bot` base class and iterative deepening handle this).
 
