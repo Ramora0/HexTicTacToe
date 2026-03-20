@@ -80,7 +80,7 @@ def evaluate_position(game, player):
                 if my_count > 0 and opp_count == 0:
                     score += LINE_SCORES[my_count]
                 elif opp_count > 0 and my_count == 0:
-                    score -= LINE_SCORES[opp_count]
+                    score -= int(LINE_SCORES[opp_count] * 1.2)
 
     return score
 
@@ -173,7 +173,8 @@ class MinimaxBot(Bot):
     def _search_root(self, game, candidates, depth):
         maximizing = game.current_player == self._player
         best_move = candidates[0]
-        best_score = -math.inf if maximizing else math.inf
+        alpha = -math.inf
+        beta = math.inf
 
         # Move ordering: TT best move first
         tt_entry = self._tt.get(self._tt_key(game))
@@ -188,17 +189,18 @@ class MinimaxBot(Bot):
             player = game.current_player
             state = game.save_state()
             self._make(game, q, r)
-            score = self._minimax(game, depth - 1, -math.inf, math.inf)
+            score = self._minimax(game, depth - 1, alpha, beta)
             self._undo(game, q, r, state, player)
 
-            if maximizing and score > best_score:
-                best_score = score
+            if maximizing and score > alpha:
+                alpha = score
                 best_move = (q, r)
-            elif not maximizing and score < best_score:
-                best_score = score
+            elif not maximizing and score < beta:
+                beta = score
                 best_move = (q, r)
 
         # Store root result in TT
+        best_score = alpha if maximizing else beta
         self._tt[self._tt_key(game)] = (depth, best_score, _EXACT, best_move)
         return best_move
 
