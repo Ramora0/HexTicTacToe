@@ -306,7 +306,7 @@ class MinimaxBot(Bot):
                 a, b = counts[0], counts[1]
                 self._eval_score += st[a + 1][b] - st[a][b]
                 counts[0] = a + 1
-                if a + 1 >= 4:
+                if a == 3:  # transitioning to hot
                     hot_a.add(wkey)
                 if a + 1 == _WIN_LENGTH and b == 0:
                     won = True
@@ -321,7 +321,7 @@ class MinimaxBot(Bot):
                 a, b = counts[0], counts[1]
                 self._eval_score += st[a][b + 1] - st[a][b]
                 counts[1] = b + 1
-                if b + 1 >= 4:
+                if b == 3:  # transitioning to hot
                     hot_b.add(wkey)
                 if b + 1 == _WIN_LENGTH and a == 0:
                     won = True
@@ -373,7 +373,7 @@ class MinimaxBot(Bot):
                 a, b = counts[0], counts[1]
                 self._eval_score += st[a - 1][b] - st[a][b]
                 counts[0] = a - 1
-                if a - 1 < 4:
+                if a == 4:  # was hot, now not
                     hot_a.discard(wkey)
         else:
             hot_b = self._hot_b
@@ -383,7 +383,7 @@ class MinimaxBot(Bot):
                 a, b = counts[0], counts[1]
                 self._eval_score += st[a][b - 1] - st[a][b]
                 counts[1] = b - 1
-                if b - 1 < 4:
+                if b == 4:  # was hot, now not
                     hot_b.discard(wkey)
 
         # Undo candidates: (q, r) is empty again
