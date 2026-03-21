@@ -15,6 +15,14 @@ from itertools import combinations
 from bot import Bot
 from game import Player, HEX_DIRECTIONS
 
+# ── Hyperparameters ──────────────────────────────────────────────────
+LINE_SCORES = [0, 1, 10, 200, 1500, 10000, 100000]  # eval score per stone count in a window
+_DEF_MULT = [0, 0.8, 0.8, 1.2, 1.5, 3.0, 1.0]      # defensive multiplier per opponent count
+_CANDIDATE_CAP = 15          # max single-cell candidates in minimax
+_ROOT_CANDIDATE_CAP = 15     # max single-cell candidates at root
+_NEIGHBOR_DIST = 1           # hex distance for candidate generation
+_DELTA_WEIGHT = 0.001        # weight of eval delta vs history in move ordering
+
 
 class TimeUp(Exception):
     pass
@@ -25,10 +33,6 @@ def hex_distance(dq, dr):
     return max(abs(dq), abs(dr), abs(ds))
 
 
-# Scores for contiguous groups of length N (index = count)
-LINE_SCORES = [0, 1, 10, 200, 1000, 10000, 100000]
-# Defensive multipliers per count
-_DEF_MULT = [0, 0.8, 0.8, 1.2, 1.5, 3.0, 1.0]
 
 _WIN_LENGTH = 6
 
@@ -48,12 +52,12 @@ _WINDOW_OFFSETS = tuple(
 # Direction vectors indexed by dir_index
 _DIR_VECTORS = tuple(HEX_DIRECTIONS)
 
-# Pre-compute the 6 neighbor offsets within hex-distance 1 (excluding self)
+# Pre-compute neighbor offsets within _NEIGHBOR_DIST (excluding self)
 _NEIGHBOR_OFFSETS_2 = tuple(
     (dq, dr)
-    for dq in range(-2, 3)
-    for dr in range(-2, 3)
-    if hex_distance(dq, dr) <= 1 and (dq, dr) != (0, 0)
+    for dq in range(-_NEIGHBOR_DIST, _NEIGHBOR_DIST + 1)
+    for dr in range(-_NEIGHBOR_DIST, _NEIGHBOR_DIST + 1)
+    if hex_distance(dq, dr) <= _NEIGHBOR_DIST and (dq, dr) != (0, 0)
 )
 
 # TT entry flags
@@ -62,8 +66,6 @@ _LOWER = 1  # true value >= stored (beta cutoff)
 _UPPER = 2  # true value <= stored (failed low)
 
 _WIN_SCORE = 100000000
-_CANDIDATE_CAP = 15
-_ROOT_CANDIDATE_CAP = 15
 
 
 def evaluate_position(game, player):
@@ -95,15 +97,9 @@ def evaluate_position(game, player):
                     elif p is not None:
                         opp_count += 1
                 if my_count > 0 and opp_count == 0:
-                    s = LINE_SCORES[my_count]
-                    if my_count >= 4 and game.move_count > 6:
-                        s = int(s * 1.5)
-                    score += s
+                    score += LINE_SCORES[my_count]
                 elif opp_count > 0 and my_count == 0:
-                    s = LINE_SCORES[opp_count]
-                    if opp_count >= 4 and game.move_count > 6:
-                        s = int(s * 1.5)
-                    score -= int(s * _DEF_MULT[opp_count])
+                    score -= int(LINE_SCORES[opp_count] * _DEF_MULT[opp_count])
 
     return score
 
@@ -654,7 +650,7 @@ class MinimaxBot(Bot):
             move_delta = self._move_delta
 
             # Sort singles by history + delta, then pairs inherit good ordering
-            delta_sign = 0.001 if maximizing else -0.001
+            delta_sign = _DELTA_WEIGHT if maximizing else -_DELTA_WEIGHT
             candidates.sort(
                 key=lambda c: history.get(c, 0) + move_delta(c[0], c[1], is_a) * delta_sign,
                 reverse=True)
