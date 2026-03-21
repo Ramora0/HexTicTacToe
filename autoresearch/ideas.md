@@ -17,6 +17,9 @@
 - [ ] Tune LINE_SCORES weights (current 10x growth may be too aggressive)
 - [ ] Defensive asymmetry — weight opponent threats more than own
 
+- [ ] Prune based our awesome eval
+- [ ] move ordering by playing in lines
+
 ## Kept improvements (in order)
 1. Heuristic eval — 100% win rate
 2. TT + Zobrist + root AB — 51%

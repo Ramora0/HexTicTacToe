@@ -20,13 +20,15 @@ _D2_OFFSETS = tuple(
 class Bot(ABC):
     """Abstract bot. Subclasses must implement get_move and respect time_limit."""
 
+    pair_moves = False  # True if get_move returns both moves of a double turn
+
     def __init__(self, time_limit=0.05):
         self.time_limit = time_limit
         self.last_depth = 0  # depth reached on most recent get_move call
 
     @abstractmethod
-    def get_move(self, game) -> tuple[int, int]:
-        """Return (q, r) for the next move. Must return within self.time_limit seconds."""
+    def get_move(self, game) -> tuple[int, int] | list[tuple[int, int]]:
+        """Return (q, r) or [(q1,r1), (q2,r2)] if pair_moves is True."""
         ...
 
     def __str__(self):

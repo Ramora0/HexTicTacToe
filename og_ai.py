@@ -4,11 +4,14 @@ Designed for infinite hex grid — no board size limits.
 Uses alpha-beta pruning with Zobrist hashing for a transposition table.
 Window-based evaluation tracks scoring incrementally via dict-keyed windows
 that are created lazily as stones spread across the grid.
+
+Each minimax ply operates on full turns (2 stones), not individual stones.
 """
 
 import math
 import random
 import time
+from itertools import combinations
 from bot import Bot
 from game import Player, HEX_DIRECTIONS
 
@@ -57,6 +60,8 @@ _NEIGHBOR_OFFSETS_2 = tuple(
 _EXACT = 0
 _LOWER = 1  # true value >= stored (beta cutoff)
 _UPPER = 2  # true value <= stored (failed low)
+
+_WIN_SCORE = 100000000
 
 
 def evaluate_position(game, player):
@@ -118,7 +123,13 @@ def get_candidates(game):
 
 
 class MinimaxBot(Bot):
-    """Iterative-deepening minimax with alpha-beta pruning, TT, and heuristic eval."""
+    """Iterative-deepening minimax with alpha-beta pruning, TT, and heuristic eval.
+
+    Each minimax ply = one full turn (2 stones). The first move of the game
+    is hardcoded to (0,0) since the board is infinite and symmetric.
+    """
+
+    pair_moves = True  # returns both moves of a double turn
 
     def __init__(self, time_limit=0.05):
         super().__init__(time_limit)
@@ -128,12 +139,18 @@ class MinimaxBot(Bot):
         self._hash = 0
         self._rc_stack = []
         self._history = {}
+        self.last_ebf = 0
 
     def get_move(self, game):
-        self._deadline = time.time() + self.time_limit
+        # First move is arbitrary on infinite board
+        if not game.board:
+            return [(0, 0)]
+
+        self._deadline = time.time() + self.time_limit * 2
         self._player = game.current_player
         self._nodes = 0
         self.last_depth = 0
+        self.last_ebf = 0
         if len(self._tt) > 1_000_000:
             self._tt.clear()
 
@@ -148,9 +165,6 @@ class MinimaxBot(Bot):
             self._hash ^= v
 
         # Build score lookup table for current player perspective.
-        # _score_table[a_count][b_count] = contribution of a window with
-        # that many A/B stones, from self._player's point of view.
-        # Includes defensive multipliers for asymmetric defense weighting.
         sz = _WIN_LENGTH + 1
         self._score_table = [[0] * sz for _ in range(sz)]
         for a in range(sz):
@@ -164,8 +178,7 @@ class MinimaxBot(Bot):
                 elif opp > 0 and my == 0:
                     self._score_table[a][b] = -int(LINE_SCORES[opp] * _DEF_MULT[opp])
 
-        # Initialize incremental eval: window counts stored as dict
-        # keyed by (dir_idx, start_q, start_r) -> [a_count, b_count]
+        # Initialize incremental eval: window counts
         self._wc = {}
         board = game.board
         seen = set()
@@ -195,8 +208,6 @@ class MinimaxBot(Bot):
             self._eval_score += st[counts[0]][counts[1]]
 
         # Initialize incremental candidate set with reference counting.
-        # _cand_refcount[cell] = number of occupied cells within distance 2.
-        # _cand_set = empty cells with refcount > 0.
         self._cand_refcount = {}
         for (q, r) in board:
             for dq, dr in _NEIGHBOR_OFFSETS_2:
@@ -206,15 +217,18 @@ class MinimaxBot(Bot):
         self._cand_set = set(self._cand_refcount)
 
         if not self._cand_set:
-            return (0, 0)
-        candidates = list(self._cand_set)
-        if len(candidates) == 1:
-            return candidates[0]
+            return [(0, 0)]
 
-        random.shuffle(candidates)
-        best_move = candidates[0]
+        # Generate and sort initial turn candidates
         maximizing = game.current_player == self._player
+        is_a = game.current_player == Player.A
+        turns = self._generate_turns(game)
+        if not turns:
+            return [(0, 0)]
 
+        best_move = list(turns[0])
+
+        # Save full state for rollback on TimeUp
         saved_board = dict(game.board)
         saved_state = (game.current_player, game.moves_left_in_turn,
                        game.winner, game.game_over)
@@ -227,10 +241,15 @@ class MinimaxBot(Bot):
 
         for depth in range(1, 200):
             try:
-                best_move, scores = self._search_root(game, candidates, depth)
+                nodes_before = self._nodes
+                result, scores = self._search_root(game, turns, depth)
+                best_move = list(result)
                 self.last_depth = depth
-                # Reorder candidates for next iteration: best-scoring first
-                candidates.sort(key=lambda m: scores[m], reverse=maximizing)
+                nodes_this_depth = self._nodes - nodes_before
+                if nodes_this_depth > 1:
+                    self.last_ebf = round(nodes_this_depth ** (1.0 / depth), 1)
+                # Reorder turns by score for next iteration
+                turns.sort(key=lambda t: scores.get(t, 0), reverse=maximizing)
             except TimeUp:
                 game.board = saved_board
                 game.move_count = saved_move_count
@@ -363,43 +382,102 @@ class MinimaxBot(Bot):
     def _tt_key(self, game):
         return (self._hash, game.current_player, game.moves_left_in_turn)
 
-    def _search_root(self, game, candidates, depth):
-        """Search all root moves. Returns (best_move, {move: score}) tuple."""
+    def _move_delta(self, q, r, is_a):
+        """Eval delta from placing at (q,r) — read-only, no state mutation."""
+        wc = self._wc
+        st = self._score_table
+        delta = 0
+        if is_a:
+            new_w = st[1][0]
+            for d_idx, oq, or_ in _WINDOW_OFFSETS:
+                counts = wc.get((d_idx, q - oq, r - or_))
+                if counts is not None:
+                    delta += st[counts[0] + 1][counts[1]] - st[counts[0]][counts[1]]
+                else:
+                    delta += new_w
+        else:
+            new_w = st[0][1]
+            for d_idx, oq, or_ in _WINDOW_OFFSETS:
+                counts = wc.get((d_idx, q - oq, r - or_))
+                if counts is not None:
+                    delta += st[counts[0]][counts[1] + 1] - st[counts[0]][counts[1]]
+                else:
+                    delta += new_w
+        return delta
+
+    def _make_turn(self, game, turn):
+        """Apply a full turn (2 stones). Returns undo info list."""
+        m1, m2 = turn
+        p1 = game.current_player
+        s1 = (p1, game.moves_left_in_turn, game.winner, game.game_over)
+        self._make(game, m1[0], m1[1])
+        if game.game_over:
+            # First stone won — no second stone
+            return [(m1, s1, p1)]
+        p2 = game.current_player
+        s2 = (p2, game.moves_left_in_turn, game.winner, game.game_over)
+        self._make(game, m2[0], m2[1])
+        return [(m1, s1, p1), (m2, s2, p2)]
+
+    def _undo_turn(self, game, undo_info):
+        """Undo a full turn in reverse order."""
+        for cell, state, player in reversed(undo_info):
+            self._undo(game, cell[0], cell[1], state, player)
+
+    def _generate_turns(self, game):
+        """Generate C(N,2) turn pairs, ordered by sorting singles first."""
+        candidates = list(self._cand_set)
+        if len(candidates) < 2:
+            if candidates:
+                return [(candidates[0], candidates[0])]
+            return []
+
+        is_a = game.current_player == Player.A
+        move_delta = self._move_delta
         maximizing = game.current_player == self._player
-        best_move = candidates[0]
+
+        # Sort singles by delta — pairs from combinations inherit good ordering
+        candidates.sort(key=lambda c: move_delta(c[0], c[1], is_a), reverse=maximizing)
+
+        return list(combinations(candidates, 2))
+
+    def _search_root(self, game, turns, depth):
+        """Search all root turns. Returns (best_turn, {turn: score})."""
+        maximizing = game.current_player == self._player
+        best_turn = turns[0]
         alpha = -math.inf
         beta = math.inf
 
         scores = {}
-        for q, r in candidates:
+        for turn in turns:
             self._check_time()
-            player = game.current_player
-            state = (player, game.moves_left_in_turn, game.winner, game.game_over)
-            self._make(game, q, r)
-            score = self._minimax(game, depth - 1, alpha, beta)
-            self._undo(game, q, r, state, player)
-            scores[(q, r)] = score
+            undo_info = self._make_turn(game, turn)
+            if game.game_over:
+                score = _WIN_SCORE if game.winner == self._player else -_WIN_SCORE
+            else:
+                score = self._minimax(game, depth - 1, alpha, beta)
+            self._undo_turn(game, undo_info)
+            scores[turn] = score
 
             if maximizing and score > alpha:
                 alpha = score
-                best_move = (q, r)
+                best_turn = turn
             elif not maximizing and score < beta:
                 beta = score
-                best_move = (q, r)
+                best_turn = turn
 
         best_score = alpha if maximizing else beta
-        # Store root result in TT
-        self._tt[self._tt_key(game)] = (depth, best_score, _EXACT, best_move)
-        return best_move, scores
+        self._tt[self._tt_key(game)] = (depth, best_score, _EXACT, best_turn)
+        return best_turn, scores
 
     def _minimax(self, game, depth, alpha, beta):
         self._check_time()
 
         if game.game_over:
             if game.winner == self._player:
-                return 100000000
+                return _WIN_SCORE
             elif game.winner != Player.NONE:
-                return -100000000
+                return -_WIN_SCORE
             return 0
 
         # TT lookup
@@ -425,62 +503,77 @@ class MinimaxBot(Bot):
 
         orig_alpha = alpha
         orig_beta = beta
-        candidates = list(self._cand_set)
-
-        # Move ordering: history heuristic, then TT move to front
-        history = self._history
-        candidates.sort(key=lambda m: history.get(m, 0), reverse=True)
-        if tt_move in self._cand_set:
-            idx = candidates.index(tt_move)
-            candidates[0], candidates[idx] = candidates[idx], candidates[0]
-
         maximizing = game.current_player == self._player
+
+        # Generate and order turns
+        candidates = list(self._cand_set)
+        if len(candidates) < 2:
+            # Edge case: fewer than 2 candidates
+            if not candidates:
+                score = self._eval_score
+                self._tt[tt_key] = (depth, score, _EXACT, None)
+                return score
+            # Single candidate — make it as a lone move (shouldn't normally happen)
+            c = candidates[0]
+            turns = [(c, c)]
+        else:
+            is_a = game.current_player == Player.A
+            history = self._history
+            move_delta = self._move_delta
+
+            # Sort singles by history + delta, then pairs inherit good ordering
+            delta_sign = 0.001 if maximizing else -0.001
+            candidates.sort(
+                key=lambda c: history.get(c, 0) + move_delta(c[0], c[1], is_a) * delta_sign,
+                reverse=True)
+
+            turns = list(combinations(candidates, 2))
+
+        # TT move to front
+        if tt_move is not None:
+            try:
+                idx = turns.index(tt_move)
+                turns[0], turns[idx] = turns[idx], turns[0]
+            except ValueError:
+                pass
+
         best_move = None
 
         if maximizing:
             value = -math.inf
-            for i, (q, r) in enumerate(candidates):
-                player = game.current_player
-                state = (player, game.moves_left_in_turn, game.winner, game.game_over)
-                self._make(game, q, r)
-                # LMR: reduce depth for late moves at sufficient depth
-                if i >= 3 and depth >= 3:
-                    child_val = self._minimax(game, depth - 2, alpha, beta)
-                    if child_val > alpha:
-                        child_val = self._minimax(game, depth - 1, alpha, beta)
+            for turn in turns:
+                undo_info = self._make_turn(game, turn)
+                if game.game_over:
+                    child_val = _WIN_SCORE if game.winner == self._player else -_WIN_SCORE
                 else:
                     child_val = self._minimax(game, depth - 1, alpha, beta)
-                self._undo(game, q, r, state, player)
+                self._undo_turn(game, undo_info)
                 if child_val > value:
                     value = child_val
-                    best_move = (q, r)
+                    best_move = turn
                 alpha = max(alpha, value)
                 if alpha >= beta:
-                    history[(q, r)] = history.get((q, r), 0) + depth * depth
+                    history[turn[0]] = history.get(turn[0], 0) + depth * depth
+                    history[turn[1]] = history.get(turn[1], 0) + depth * depth
                     break
         else:
             value = math.inf
-            for i, (q, r) in enumerate(candidates):
-                player = game.current_player
-                state = (player, game.moves_left_in_turn, game.winner, game.game_over)
-                self._make(game, q, r)
-                # LMR: reduce depth for late moves at sufficient depth
-                if i >= 3 and depth >= 3:
-                    child_val = self._minimax(game, depth - 2, alpha, beta)
-                    if child_val < beta:
-                        child_val = self._minimax(game, depth - 1, alpha, beta)
+            for turn in turns:
+                undo_info = self._make_turn(game, turn)
+                if game.game_over:
+                    child_val = _WIN_SCORE if game.winner == self._player else -_WIN_SCORE
                 else:
                     child_val = self._minimax(game, depth - 1, alpha, beta)
-                self._undo(game, q, r, state, player)
+                self._undo_turn(game, undo_info)
                 if child_val < value:
                     value = child_val
-                    best_move = (q, r)
+                    best_move = turn
                 beta = min(beta, value)
                 if alpha >= beta:
-                    history[(q, r)] = history.get((q, r), 0) + depth * depth
+                    history[turn[0]] = history.get(turn[0], 0) + depth * depth
+                    history[turn[1]] = history.get(turn[1], 0) + depth * depth
                     break
 
-        # Determine TT flag
         if value <= orig_alpha:
             flag = _UPPER
         elif value >= orig_beta:

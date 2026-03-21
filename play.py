@@ -239,8 +239,13 @@ def main():
                 and now - last_ai_time >= AI_MOVE_DELAY):
             # Draw "thinking" frame before computing
             draw_board(screen, game, visible_cells, None, hex_size, ox, oy, fonts)
-            q, r = ai.get_move(game)
-            game.make_move(q, r)
+            result = ai.get_move(game)
+            if ai.pair_moves:
+                for q, r in result:
+                    if not game.game_over:
+                        game.make_move(q, r)
+            else:
+                game.make_move(*result)
             last_ai_time = pygame.time.get_ticks()
 
         draw_board(screen, game, visible_cells, hover_hex, hex_size, ox, oy, fonts)

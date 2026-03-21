@@ -12,8 +12,7 @@ from multiprocessing import Pool
 from tqdm import tqdm
 from game import HexGame, Player
 from bot import RandomBot
-from og_ai import MinimaxBot as OgMinimaxBot
-from ai import MinimaxBot as NewMinimaxBot
+import importlib
 
 
 # Grace factor: allow 3x the time limit before counting as a violation.
@@ -21,6 +20,8 @@ from ai import MinimaxBot as NewMinimaxBot
 GRACE_FACTOR = 3.0
 # If a bot accumulates this many violations in a single game, forfeit that game.
 MAX_VIOLATIONS_PER_GAME = 10
+# Maximum total moves before declaring a draw.
+MAX_MOVES_PER_GAME = 200
 
 
 class TimeLimitExceeded(Exception):
@@ -43,26 +44,47 @@ def play_game(bot_a, bot_b, win_length=6, violations=None):
     depths = {Player.A: defaultdict(int), Player.B: defaultdict(int)}
     times = {Player.A: [0.0, 0], Player.B: [0.0, 0]}  # [total_secs, num_moves]
 
+    total_moves = 0
     while not game.game_over:
         player = game.current_player
         bot = bots[player]
 
         t0 = time.time()
-        q, r = bot.get_move(game)
+        result = bot.get_move(game)
         elapsed = time.time() - t0
 
-        times[player][0] += elapsed
-        times[player][1] += 1
+        # Normalize to list of moves based on bot's pair_moves flag
+        if bot.pair_moves:
+            moves = result
+            num_moves = len(moves)
+        else:
+            moves = [result]
+            num_moves = 1
 
-        if elapsed > bot.time_limit * GRACE_FACTOR:
+        times[player][0] += elapsed
+        times[player][1] += num_moves
+
+        # Allow 2x time budget for pair-move bots
+        allowed_time = bot.time_limit * num_moves
+        if elapsed > allowed_time * GRACE_FACTOR:
             if violations is not None:
                 violations[bot] = violations.get(bot, 0) + 1
                 if violations[bot] >= MAX_VIOLATIONS_PER_GAME:
                     raise TimeLimitExceeded(bot, violations[bot])
 
-        depths[player][bot.last_depth] += 1
+        depths[player][bot.last_depth] += num_moves
+        total_moves += num_moves
 
-        if not game.make_move(q, r):
+        if total_moves >= MAX_MOVES_PER_GAME:
+            return (Player.NONE, depths[Player.A], depths[Player.B],
+                    tuple(times[Player.A]), tuple(times[Player.B]))
+
+        invalid = False
+        for q, r in moves:
+            if game.game_over or not game.make_move(q, r):
+                invalid = True
+                break
+        if invalid:
             return (Player.B if player == Player.A else Player.A,
                     depths[Player.A], depths[Player.B],
                     tuple(times[Player.A]), tuple(times[Player.B]))
@@ -91,6 +113,8 @@ def _play_one(args):
         d_a, d_b = defaultdict(int), defaultdict(int)
         t_a, t_b = (0.0, 0), (0.0, 0)
 
+    move_count = t_a[1] + t_b[1]  # total moves in the game
+
     return (
         winner,
         swapped,
@@ -101,10 +125,11 @@ def _play_one(args):
         exceeded,
         t_a,
         t_b,
+        move_count,
     )
 
 
-def evaluate(bot_a, bot_b, num_games=100, win_length=6, time_limit=0.1):
+def evaluate(bot_a, bot_b, num_games=100, win_length=6, time_limit=0.1, use_tqdm=True):
     """Play num_games between two bots in parallel, swapping sides each game."""
     bot_a.time_limit = time_limit
     bot_b.time_limit = time_limit
@@ -119,6 +144,7 @@ def evaluate(bot_a, bot_b, num_games=100, win_length=6, time_limit=0.1):
     aborted_games = 0
     bot_a_time = [0.0, 0]  # [total_secs, num_moves]
     bot_b_time = [0.0, 0]
+    game_lengths = []  # total moves per game
 
     workers = os.cpu_count() or 1
     args = [(bot_a, bot_b, i, win_length) for i in range(num_games)]
@@ -126,12 +152,16 @@ def evaluate(bot_a, bot_b, num_games=100, win_length=6, time_limit=0.1):
     t0 = time.time()
 
     with Pool(workers) as pool:
-        pbar = tqdm(pool.imap_unordered(_play_one, args), total=num_games, desc="Games", unit="game")
-        for result in pbar:
-            winner, swapped, d_a, d_b, v_a, v_b, exceeded, t_a, t_b = result
+        results_iter = pool.imap_unordered(_play_one, args)
+        if use_tqdm:
+            results_iter = tqdm(results_iter, total=num_games, desc="Games", unit="game")
+        for result in results_iter:
+            winner, swapped, d_a, d_b, v_a, v_b, exceeded, t_a, t_b, move_count = result
 
             if exceeded:
                 aborted_games += 1
+            else:
+                game_lengths.append(move_count)
 
             if swapped:
                 # seat A = bot_b, seat B = bot_a
@@ -166,7 +196,8 @@ def evaluate(bot_a, bot_b, num_games=100, win_length=6, time_limit=0.1):
                     draws += 1
 
             games_played += 1
-            pbar.set_postfix(A=bot_a_wins, B=bot_b_wins, D=draws)
+            if use_tqdm:
+                results_iter.set_postfix(A=bot_a_wins, B=bot_b_wins, D=draws)
 
     elapsed = time.time() - t0
     total = max(games_played, 1)
@@ -196,6 +227,24 @@ def evaluate(bot_a, bot_b, num_games=100, win_length=6, time_limit=0.1):
             avg_ms = 1000 * bt[0] / bt[1]
             print(f"  {name} avg move time: {avg_ms:.0f}ms ({bt[1]} moves)")
 
+    if game_lengths:
+        avg_len = sum(game_lengths) / len(game_lengths)
+        lo_len, hi_len = min(game_lengths), max(game_lengths)
+        print(f"\n  Game length: avg {avg_len:.1f} moves, range [{lo_len}-{hi_len}]")
+        bin_size = 50
+        num_bins = MAX_MOVES_PER_GAME // bin_size
+        bins = [0] * num_bins
+        for gl in game_lengths:
+            idx = min(gl // bin_size, num_bins - 1)
+            bins[idx] += 1
+        max_count = max(bins) if max(bins) > 0 else 1
+        bar_width = 30
+        for i, count in enumerate(bins):
+            lo = i * bin_size
+            hi = (i + 1) * bin_size - 1 if i < num_bins - 1 else MAX_MOVES_PER_GAME
+            bar = "█" * max(1, round(bar_width * count / max_count)) if count else ""
+            print(f"    {lo:3d}-{hi:3d}: {bar} {count}")
+
     if bot_a_violations or bot_b_violations or aborted_games:
         print()
         print(f"  TIME VIOLATIONS: {na}={bot_a_violations}, {nb}={bot_b_violations}"
@@ -206,17 +255,43 @@ def evaluate(bot_a, bot_b, num_games=100, win_length=6, time_limit=0.1):
     return bot_a_wins, bot_b_wins, draws
 
 
-class NewAI(NewMinimaxBot):
-    def __str__(self): return "NewAI"
+class NamedBotWrapper:
+    """Wraps a MinimaxBot instance with a custom display name."""
+    def __init__(self, bot, name):
+        object.__setattr__(self, '_bot', bot)
+        object.__setattr__(self, '_name', name)
+    def __str__(self):
+        return self._name
+    def __getattr__(self, attr):
+        return getattr(object.__getattribute__(self, '_bot'), attr)
+    def __setattr__(self, attr, value):
+        setattr(object.__getattribute__(self, '_bot'), attr, value)
+    def get_move(self, game):
+        return object.__getattribute__(self, '_bot').get_move(game)
 
-class OgAI(OgMinimaxBot):
-    def __str__(self): return "OgAI"
+
+def load_bot(module_name, time_limit=0.1):
+    """Load MinimaxBot from a module name (without .py extension)."""
+    mod = importlib.import_module(module_name)
+    bot = mod.MinimaxBot(time_limit=time_limit)
+    return NamedBotWrapper(bot, module_name)
 
 
 if __name__ == "__main__":
-    n = int(sys.argv[1]) if len(sys.argv) > 1 else 20
+    import argparse
 
-    a = NewAI(time_limit=0.05)
-    b = OgAI(time_limit=0.05)
+    parser = argparse.ArgumentParser(description="Evaluate two AI bots against each other.")
+    parser.add_argument("bot_a", nargs="?", default="ai",
+                        help="Module name for bot A (default: ai)")
+    parser.add_argument("bot_b", nargs="?", default="og_ai",
+                        help="Module name for bot B (default: og_ai)")
+    parser.add_argument("-n", "--num-games", type=int, default=20,
+                        help="Number of games to play (default: 20)")
+    parser.add_argument("--no-tqdm", action="store_true",
+                        help="Disable progress bar")
+    parsed = parser.parse_args()
 
-    evaluate(a, b, num_games=n)
+    a = load_bot(parsed.bot_a, time_limit=0.1)
+    b = load_bot(parsed.bot_b, time_limit=0.1)
+
+    evaluate(a, b, num_games=parsed.num_games, use_tqdm=not parsed.no_tqdm)
