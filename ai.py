@@ -149,7 +149,7 @@ class MinimaxBot(Bot):
         self._nodes = 0
         self.last_depth = 0
         self.last_ebf = 0
-        if len(self._tt) > 500_000:
+        if len(self._tt) > 1_000_000:
             self._tt.clear()
 
         # Compute initial Zobrist hash from board state (lazy generation)
@@ -267,7 +267,7 @@ class MinimaxBot(Bot):
 
     def _check_time(self):
         self._nodes += 1
-        if self._nodes % 128 == 0 and time.time() >= self._deadline:
+        if self._nodes % 512 == 0 and time.time() >= self._deadline:
             raise TimeUp
 
     def _make(self, game, q, r):
