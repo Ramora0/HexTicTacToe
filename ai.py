@@ -18,8 +18,8 @@ from game import Player, HEX_DIRECTIONS
 # ── Hyperparameters ──────────────────────────────────────────────────
 LINE_SCORES = [0, 0, 8, 1200, 3000, 50000, 100000]  # eval score per stone count in a window
 _DEF_MULT = [0, 1.0, 1.0, 1.0, 1.8, 2.5, 1.0]      # defensive multiplier: extra weight on blocking 4/5-in-a-row
-_CANDIDATE_CAP = 15          # max single-cell candidates in minimax
-_ROOT_CANDIDATE_CAP = 15     # max single-cell candidates at root
+_CANDIDATE_CAP = 11          # max single-cell candidates in minimax
+_ROOT_CANDIDATE_CAP = 13     # max single-cell candidates at root
 _NEIGHBOR_DIST = 1           # hex distance for candidate generation
 _DELTA_WEIGHT = 1.5          # weight of eval delta vs history in move ordering
 
@@ -145,6 +145,9 @@ class MinimaxBot(Bot):
             return [(0, 0)]
 
         self._deadline = time.time() + self.time_limit * 2
+        if game.current_player != getattr(self, '_player', None):
+            self._tt.clear()
+            self._history.clear()
         self._player = game.current_player
         self._nodes = 0
         self.last_depth = 0

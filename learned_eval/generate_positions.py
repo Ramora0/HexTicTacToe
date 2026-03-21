@@ -42,7 +42,8 @@ def play_game_collect(args):
     time_limit, game_idx, seen_keys = args
     rng = random.Random(game_idx)
     game = HexGame(win_length=6)
-    bot = MinimaxBot(time_limit=time_limit)
+    bot_a = MinimaxBot(time_limit=time_limit)
+    bot_b = MinimaxBot(time_limit=time_limit)
 
     positions = []
     total_stones = 0
@@ -59,6 +60,7 @@ def play_game_collect(args):
             positions.append((board_snap, cp, eval_score))
 
         # Always get the bot's moves
+        bot = bot_a if cp == Player.A else bot_b
         bot_moves = bot.get_move(game)
 
         if not seen:
@@ -90,7 +92,7 @@ def play_game_collect(args):
         bk = _board_key(board_snap, cp)
         tagged.append((bk, board_snap, cp, eval_score, game_idx))
 
-    return tagged
+    return tagged, total_stones
 
 
 def _load_existing(path):
@@ -134,6 +136,7 @@ def main():
     games_played = 0
     game_idx = int(time.time() * 1000) % 1_000_000
     games_since_save = 0
+    total_moves = 0
 
     pbar = tqdm(total=args.target, initial=len(unique), unit="pos", desc="Unique positions")
 
@@ -145,10 +148,11 @@ def main():
                              for i in range(batch_size)]
                 game_idx += batch_size
 
-                for game_positions in pool.imap_unordered(play_game_collect, task_args):
+                for game_positions, move_count in pool.imap_unordered(play_game_collect, task_args):
                     prev_unique = len(unique)
                     games_played += 1
                     games_since_save += 1
+                    total_moves += move_count
                     for bk, board_snap, cp, eval_score, gid in game_positions:
                         if bk not in unique:
                             unique[bk] = [board_snap, cp, eval_score, gid]
@@ -168,7 +172,9 @@ def main():
     _save(unique, args.output)
 
     evals = [v[2] for v in unique.values()]
+    avg_moves = total_moves / games_played if games_played else 0
     print(f"\nCollected {len(unique)} unique positions in {games_played} games")
+    print(f"  Avg moves/game: {avg_moves:.1f}")
     print(f"  Eval range: [{min(evals):.0f}, {max(evals):.0f}]")
     print(f"  Eval mean: {sum(evals)/len(evals):.0f}")
     print(f"Saved to {args.output}")
