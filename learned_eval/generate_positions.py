@@ -1,12 +1,16 @@
-"""Generate training positions with hand-tuned eval scores.
+"""Generate training positions with minimax search scores and game outcomes.
 
 Plays games via self-play, snapshots positions after each full turn,
-and stores the hand-tuned evaluate_position() score for each.
+and stores both the minimax search result (the bot's best score after
+iterative deepening) and the actual game outcome (+1000 current player
+won, -1000 lost, 0 no winner) for each.
 
 To ensure diversity, one of the bot's two moves per turn is replaced
 with a random candidate when the position has already been seen.
 
 Saves incrementally to disk. Resume by running again with the same output path.
+
+Output format: list of (board, current_player, search_score, win_score, game_id)
 
 Usage: python -m learned_eval.generate_positions [--time-limit 0.05]
 """
@@ -21,7 +25,7 @@ from multiprocessing import Pool
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from game import HexGame, Player
-from ai import MinimaxBot, get_candidates, evaluate_position
+from ai import MinimaxBot, get_candidates
 
 MAX_MOVES = 200
 TARGET_POSITIONS = 50_000
@@ -34,7 +38,7 @@ def _board_key(board, current_player):
 
 
 def play_game_collect(args):
-    """Play one game, collecting positions with their eval scores.
+    """Play one game, collecting positions with search scores and game outcome.
 
     At each turn, if the position has already been seen, replace one of
     the bot's two moves with a random candidate to diversify.
@@ -54,9 +58,14 @@ def play_game_collect(args):
 
         seen = board_snap and _board_key(board_snap, cp) in seen_keys
 
-        # Always get the bot's moves
+        # Always get the bot's moves (this runs minimax search)
         bot = bot_a if cp == Player.A else bot_b
         bot_moves = bot.get_move(game)
+
+        # Snapshot the position with the search score from minimax
+        if board_snap:
+            search_score = bot.last_score
+            positions.append((board_snap, cp, search_score))
 
         if not seen:
             moves = bot_moves
@@ -82,10 +91,21 @@ def play_game_collect(args):
                 break
             total_stones += 1
 
+    # Determine game outcome
+    winner = game.winner
+
+    # Tag each position with win_score from current_player's perspective
     tagged = []
     for board_snap, cp, eval_score in positions:
+        if winner == Player.NONE:
+            win_score = 0.0
+        elif winner == cp:
+            win_score = 1000.0
+        else:
+            win_score = -1000.0
+
         bk = _board_key(board_snap, cp)
-        tagged.append((bk, board_snap, cp, eval_score, game_idx))
+        tagged.append((bk, board_snap, cp, eval_score, win_score, game_idx))
 
     return tagged, total_stones
 
@@ -97,16 +117,21 @@ def _load_existing(path):
         with open(path, "rb") as f:
             positions = pickle.load(f)
         for entry in positions:
-            board, cp, eval_score, game_id = entry
+            if len(entry) == 5:
+                board, cp, eval_score, win_score, game_id = entry
+            else:
+                # Legacy 4-tuple format (eval only, no win data)
+                board, cp, eval_score, game_id = entry
+                win_score = 0.0
             bk = _board_key(board, cp)
-            unique[bk] = [board, cp, eval_score, game_id]
+            unique[bk] = [board, cp, eval_score, win_score, game_id]
         print(f"Resumed: loaded {len(unique)} existing positions from {path}")
     return unique
 
 
 def _save(unique, path):
     """Save current positions to disk."""
-    positions = [(v[0], v[1], v[2], v[3]) for v in unique.values()]
+    positions = [(v[0], v[1], v[2], v[3], v[4]) for v in unique.values()]
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "wb") as f:
@@ -148,9 +173,9 @@ def main():
                     games_played += 1
                     games_since_save += 1
                     total_moves += move_count
-                    for bk, board_snap, cp, eval_score, gid in game_positions:
+                    for bk, board_snap, cp, eval_score, win_score, gid in game_positions:
                         if bk not in unique:
-                            unique[bk] = [board_snap, cp, eval_score, gid]
+                            unique[bk] = [board_snap, cp, eval_score, win_score, gid]
 
                     new = len(unique) - prev_unique
                     pbar.update(new)
@@ -167,11 +192,16 @@ def main():
     _save(unique, args.output)
 
     evals = [v[2] for v in unique.values()]
+    wins = [v[3] for v in unique.values()]
     avg_moves = total_moves / games_played if games_played else 0
+    win_count = sum(1 for w in wins if w > 0)
+    loss_count = sum(1 for w in wins if w < 0)
+    draw_count = sum(1 for w in wins if w == 0)
     print(f"\nCollected {len(unique)} unique positions in {games_played} games")
     print(f"  Avg moves/game: {avg_moves:.1f}")
     print(f"  Eval range: [{min(evals):.0f}, {max(evals):.0f}]")
     print(f"  Eval mean: {sum(evals)/len(evals):.0f}")
+    print(f"  Win/Loss/Draw: {win_count}/{loss_count}/{draw_count}")
     print(f"Saved to {args.output}")
 
 

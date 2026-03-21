@@ -17,7 +17,6 @@ from game import Player, HEX_DIRECTIONS
 
 # ── Hyperparameters ──────────────────────────────────────────────────
 LINE_SCORES = [0, 0, 8, 1200, 3000, 50000, 100000]  # eval score per stone count in a window
-_DEF_MULT = [0, 1.0, 1.0, 1.0, 1.8, 2.5, 1.0]      # defensive multiplier: extra weight on blocking 4/5-in-a-row
 _CANDIDATE_CAP = 11          # max single-cell candidates in minimax
 _ROOT_CANDIDATE_CAP = 13     # max single-cell candidates at root
 _NEIGHBOR_DIST = 1           # hex distance for candidate generation
@@ -99,7 +98,7 @@ def evaluate_position(game, player):
                 if my_count > 0 and opp_count == 0:
                     score += LINE_SCORES[my_count]
                 elif opp_count > 0 and my_count == 0:
-                    score -= int(LINE_SCORES[opp_count] * _DEF_MULT[opp_count])
+                    score -= LINE_SCORES[opp_count]
 
     return score
 
@@ -138,6 +137,7 @@ class MinimaxBot(Bot):
         self._rc_stack = []
         self._history = {}
         self.last_ebf = 0
+        self.last_score = 0
 
     def get_move(self, game):
         # First move is arbitrary on infinite board
@@ -177,7 +177,7 @@ class MinimaxBot(Bot):
                 if my > 0 and opp == 0:
                     self._score_table[a][b] = LINE_SCORES[my]
                 elif opp > 0 and my == 0:
-                    self._score_table[a][b] = -int(LINE_SCORES[opp] * _DEF_MULT[opp])
+                    self._score_table[a][b] = -LINE_SCORES[opp]
 
         # Initialize incremental eval: window counts
         self._wc = {}
@@ -257,6 +257,7 @@ class MinimaxBot(Bot):
                 nodes_this_depth = self._nodes - nodes_before
                 if nodes_this_depth > 1:
                     self.last_ebf = round(nodes_this_depth ** (1.0 / depth), 1)
+                self.last_score = scores.get(result, 0)
                 # Reorder turns by score for next iteration
                 turns.sort(key=lambda t: scores.get(t, 0), reverse=maximizing)
                 # Stop if forced win/loss found

@@ -1,9 +1,13 @@
-"""Train pattern values via linear regression on hand-tuned eval targets.
+"""Train pattern values via linear regression on position targets.
 
 Extracts 6-cell window features from positions, maps to canonical patterns,
-and optimizes values so sum_of_values approximates the hand-tuned evaluator.
+and optimizes values so sum_of_values approximates the target.
 
-Usage: python -m learned_eval.train [--input data/positions.pkl] [--epochs 200] [--lr 0.1]
+Supports two target types:
+  --target eval  (default) Train on evaluator scores (entry[2])
+  --target win   Train on game outcomes (entry[3] for 5-tuple, entry[2] for 4-tuple)
+
+Usage: python -m learned_eval.train [--input data/positions.pkl] [--target eval] [--epochs 200]
 """
 
 import json
@@ -80,13 +84,15 @@ def extract_features(board, current_player):
     return features
 
 
-def build_dataset(positions):
+def build_dataset(positions, target_idx=2, norm_stats=None):
     """Convert positions to sparse feature matrix and target vector.
 
-    Each position has (board, current_player, eval_score, game_id).
-    Target = eval_score, normalized to zero mean / unit variance.
+    Args:
+        positions: list of tuples (board, current_player, eval_score, [win_score,] game_id)
+        target_idx: which entry index to use as training target
+        norm_stats: optional (mean, std) from training set — val must use train's stats
     """
-    print(f"Extracting features from {len(positions)} positions...")
+    print(f"Extracting features from {len(positions)} positions (target=entry[{target_idx}])...")
     t0 = time.time()
 
     feat_indices = []
@@ -94,7 +100,8 @@ def build_dataset(positions):
     raw_targets = []
 
     for i, entry in enumerate(positions):
-        board, cp, eval_score = entry[0], entry[1], entry[2]
+        board, cp = entry[0], entry[1]
+        target = entry[target_idx]
 
         features = extract_features(board, cp)
         if features:
@@ -102,25 +109,28 @@ def build_dataset(positions):
             vals = np.array(list(features.values()), dtype=np.float64)
             feat_indices.append(idx)
             feat_values.append(vals)
-            raw_targets.append(eval_score)
+            raw_targets.append(target)
 
         if (i + 1) % 10000 == 0:
             print(f"  {i+1}/{len(positions)} ({time.time()-t0:.1f}s)")
 
     raw_targets = np.array(raw_targets, dtype=np.float64)
 
-    # Normalize targets for stable training
-    target_mean = float(np.mean(raw_targets))
-    target_std = float(np.std(raw_targets))
-    if target_std < 1e-8:
-        target_std = 1.0
+    # Normalize targets — use provided stats (for val) or compute from data (for train)
+    if norm_stats is not None:
+        target_mean, target_std = norm_stats
+    else:
+        target_mean = float(np.mean(raw_targets))
+        target_std = float(np.std(raw_targets))
+        if target_std < 1e-8:
+            target_std = 1.0
     targets = (raw_targets - target_mean) / target_std
 
     weights = np.ones(len(targets), dtype=np.float64)
 
     print(f"  Done in {time.time()-t0:.1f}s, {len(targets)} usable positions")
-    print(f"  Eval targets: mean={target_mean:.1f}, std={target_std:.1f}, "
-          f"min={raw_targets.min():.1f}, max={raw_targets.max():.1f}")
+    print(f"  Targets: mean={target_mean:.1f}, std={target_std:.1f}, "
+          f"raw min={raw_targets.min():.1f}, raw max={raw_targets.max():.1f}")
     return feat_indices, feat_values, targets, weights, target_mean, target_std
 
 
@@ -188,13 +198,20 @@ def train(train_data, val_data, num_params, epochs=200, lr=0.01, l2=0.001):
             grad[tr_idx[i]] += scaled_res[i] * tr_vals[i]
         grad += 2 * l2 * params
 
-        # Adam update
+        # Adam update with linear warmup + cosine decay
         t_adam = epoch + 1
+        warmup_epochs = 20
+        if epoch < warmup_epochs:
+            cur_lr = lr * (epoch + 1) / warmup_epochs
+        else:
+            progress = (epoch - warmup_epochs) / max(epochs - warmup_epochs, 1)
+            cur_lr = lr * 0.5 * (1 + math.cos(math.pi * progress))
+
         m = beta1 * m + (1 - beta1) * grad
         v = beta2 * v + (1 - beta2) * grad ** 2
         m_hat = m / (1 - beta1 ** t_adam)
         v_hat = v / (1 - beta2 ** t_adam)
-        params -= lr * m_hat / (np.sqrt(v_hat) + eps)
+        params -= cur_lr * m_hat / (np.sqrt(v_hat) + eps)
 
     # Final metrics
     if has_val:
@@ -257,9 +274,11 @@ def split_by_game(positions, val_fraction=0.2, seed=42):
     """
     rng = np.random.RandomState(seed)
 
+    # game_id is at index 3 for 4-tuple, index 4 for 5-tuple
+    gid_idx = 4 if len(positions[0]) == 5 else 3
     has_game_ids = len(positions[0]) >= 4
     if has_game_ids:
-        game_ids = sorted({entry[3] for entry in positions})
+        game_ids = sorted({entry[gid_idx] for entry in positions})
         rng.shuffle(game_ids)
         n_val = max(1, int(len(game_ids) * val_fraction))
         val_games = set(game_ids[:n_val])
@@ -267,7 +286,7 @@ def split_by_game(positions, val_fraction=0.2, seed=42):
         train_pos = []
         val_pos = []
         for entry in positions:
-            gid = entry[3]
+            gid = entry[gid_idx]
             if gid in val_games:
                 val_pos.append(entry)
             else:
@@ -294,6 +313,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", default=os.path.join(os.path.dirname(__file__), "data", "positions.pkl"))
     parser.add_argument("--output-dir", default=os.path.join(os.path.dirname(__file__), "results"))
+    parser.add_argument("--target", choices=["eval", "win"], default="eval",
+                        help="'eval' = evaluator score (entry[2]), 'win' = game outcome (entry[3] for 5-tuple)")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=0.01)
     parser.add_argument("--l2", type=float, default=0.001)
@@ -304,13 +325,24 @@ def main():
         positions = pickle.load(f)
     print(f"Loaded {len(positions)} positions from {args.input}")
 
+    # Determine target index
+    is_5tuple = len(positions[0]) == 5
+    if args.target == "win":
+        target_idx = 3 if is_5tuple else 2  # 4-tuple eval IS the game outcome
+        print(f"Training on game outcomes (entry[{target_idx}])")
+    else:
+        target_idx = 2
+        print(f"Training on evaluator scores (entry[2])")
+
     train_pos, val_pos = split_by_game(positions, val_fraction=args.val_fraction)
 
-    train_result = build_dataset(train_pos)
+    train_result = build_dataset(train_pos, target_idx=target_idx)
     train_data = train_result[:4]
     target_mean, target_std = train_result[4], train_result[5]
 
-    val_result = build_dataset(val_pos)
+    # Val MUST use train's normalization stats
+    val_result = build_dataset(val_pos, target_idx=target_idx,
+                               norm_stats=(target_mean, target_std))
     val_data = val_result[:4]
 
     params = train(train_data, val_data, NUM_CANON,
