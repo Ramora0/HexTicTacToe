@@ -14,7 +14,7 @@ from og_ai import MinimaxBot
 WINDOW_WIDTH = 900
 WINDOW_HEIGHT = 800
 MAX_HEX_SIZE = 28
-VISIBLE_DIST = 3  # show empty cells up to this distance from occupied stones
+VISIBLE_DIST = 8  # show empty cells up to this distance from occupied stones
 
 # --- Colors ---
 BG_COLOR = (24, 24, 32)
@@ -240,6 +240,23 @@ def main():
                 elif event.key == pygame.K_q:
                     pygame.quit()
                     sys.exit()
+                elif event.key == pygame.K_SPACE and not game.game_over:
+                    if not game.board:
+                        # First move: place at center, skip AI entirely
+                        game.make_move(0, 0)
+                    elif game.current_player == Player.A:
+                        # AI plays the human's remaining moves
+                        draw_board(screen, game, visible_cells, None, hex_size, ox, oy, fonts, ai_stats)
+                        result = ai.get_move(game)
+                        if ai.pair_moves:
+                            for q, r in result:
+                                if not game.game_over:
+                                    game.make_move(q, r)
+                        else:
+                            game.make_move(*result)
+                        ai_stats = (ai.last_depth, ai._nodes)
+                        last_ai_time = pygame.time.get_ticks()
+                    hover_hex = None
 
         # AI turn — one move per delay tick
         if (game.current_player == Player.B and not game.game_over
