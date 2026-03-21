@@ -213,6 +213,9 @@ def evaluate(bot_a, bot_b, num_games=100, win_length=6, time_limit=0.1, use_tqdm
     print(f"  {na:>15s}: {bot_a_wins:3d} wins ({100*bot_a_wins/total:.0f}%)")
     print(f"  {nb:>15s}: {bot_b_wins:3d} wins ({100*bot_b_wins/total:.0f}%)")
     print(f"  {'Draws':>15s}: {draws:3d}      ({100*draws/total:.0f}%)")
+    # Total win rate: wins + half draws (standard tournament scoring)
+    bot_a_score = (bot_a_wins + 0.5 * draws) / total
+    print(f"\n  {na} total win rate: {100*bot_a_score:.1f}%")
     print()
 
     for name, depths in [(str(bot_a), bot_a_depths), (str(bot_b), bot_b_depths)]:
