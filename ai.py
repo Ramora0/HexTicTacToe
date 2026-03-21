@@ -16,7 +16,7 @@ from bot import Bot
 from game import Player, HEX_DIRECTIONS
 
 # ── Hyperparameters ──────────────────────────────────────────────────
-LINE_SCORES = [0, 0, 5, 1000, 2000, 75000, 100000]  # eval score per stone count in a window
+LINE_SCORES = [0, 0, 5, 1000, 2000, 50000, 100000]  # eval score per stone count in a window
 _DEF_MULT = [0, 1.0, 1.0, 1.0, 1.5, 2.0, 1.0]      # defensive multiplier: extra weight on blocking 4/5-in-a-row
 _CANDIDATE_CAP = 15          # max single-cell candidates in minimax
 _ROOT_CANDIDATE_CAP = 15     # max single-cell candidates at root
@@ -149,7 +149,7 @@ class MinimaxBot(Bot):
         self._nodes = 0
         self.last_depth = 0
         self.last_ebf = 0
-        if len(self._tt) > 1_000_000:
+        if len(self._tt) > 500_000:
             self._tt.clear()
 
         # Compute initial Zobrist hash from board state (lazy generation)
