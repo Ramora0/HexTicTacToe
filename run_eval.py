@@ -20,6 +20,8 @@ def main():
     parser.add_argument("--old-class", default="MinimaxBot", help="Class name in old module (default: MinimaxBot)")
     parser.add_argument("--games", type=int, default=400, help="Number of games (default: 400)")
     parser.add_argument("--time-limit", type=float, default=0.1, help="Time limit per move in seconds (default: 0.1)")
+    parser.add_argument("--no-tqdm", action="store_true", help="Disable progress bar")
+    parser.add_argument("--max-moves", type=int, default=None, help="Max moves per game before draw (default: 200)")
     args = parser.parse_args()
 
     new_mod = importlib.import_module(args.new_module)
@@ -28,9 +30,11 @@ def main():
     NewBot = getattr(new_mod, args.new_class)
     OldBot = getattr(old_mod, args.old_class)
 
-    from evaluate import evaluate
-    evaluate(NewBot(time_limit=args.time_limit), OldBot(time_limit=args.time_limit),
-             num_games=args.games, time_limit=args.time_limit)
+    import evaluate as eval_mod
+    if args.max_moves is not None:
+        eval_mod.MAX_MOVES_PER_GAME = args.max_moves
+    eval_mod.evaluate(NewBot(time_limit=args.time_limit), OldBot(time_limit=args.time_limit),
+                      num_games=args.games, time_limit=args.time_limit, use_tqdm=not args.no_tqdm)
 
 
 if __name__ == "__main__":

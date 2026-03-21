@@ -128,9 +128,6 @@ class MinimaxBot(Bot):
     """
 
     pair_moves = True  # returns both moves of a double turn
-    __slots__ = ('_deadline', '_nodes', '_tt', '_hash', '_rc_stack', '_history',
-                 'last_ebf', '_player', '_score_table', '_wc', '_eval_score',
-                 '_cand_refcount', '_cand_set', '_hot_a', '_hot_b')
 
     def __init__(self, time_limit=0.05):
         super().__init__(time_limit)
