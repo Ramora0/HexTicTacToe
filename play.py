@@ -126,7 +126,7 @@ def compute_view(visible_cells):
     return size, ox, oy
 
 
-def draw_board(screen, game, visible_cells, hover_hex, hex_size, ox, oy, fonts):
+def draw_board(screen, game, visible_cells, hover_hex, hex_size, ox, oy, fonts, ai_stats=None):
     font_big, font_med, font_sm = fonts
     screen.fill(BG_COLOR)
 
@@ -176,6 +176,11 @@ def draw_board(screen, game, visible_cells, hover_hex, hex_size, ox, oy, fonts):
         )
         screen.blit(moves_surf, moves_surf.get_rect(centerx=WINDOW_WIDTH // 2, y=55))
 
+    if ai_stats:
+        depth, nodes = ai_stats
+        ai_info = font_sm.render(f"AI: depth {depth}, {nodes:,} nodes", True, SUBTLE_TEXT)
+        screen.blit(ai_info, ai_info.get_rect(centerx=WINDOW_WIDTH // 2, y=WINDOW_HEIGHT - 50))
+
     instr = font_sm.render("Click to place  |  R = restart  |  Q = quit", True, SUBTLE_TEXT)
     screen.blit(instr, instr.get_rect(centerx=WINDOW_WIDTH // 2, y=WINDOW_HEIGHT - 30))
 
@@ -199,6 +204,7 @@ def main():
 
     hover_hex = None
     last_ai_time = 0
+    ai_stats = None
 
     while True:
         now = pygame.time.get_ticks()
@@ -230,6 +236,7 @@ def main():
                 if event.key == pygame.K_r:
                     game.reset()
                     hover_hex = None
+                    ai_stats = None
                 elif event.key == pygame.K_q:
                     pygame.quit()
                     sys.exit()
@@ -238,7 +245,7 @@ def main():
         if (game.current_player == Player.B and not game.game_over
                 and now - last_ai_time >= AI_MOVE_DELAY):
             # Draw "thinking" frame before computing
-            draw_board(screen, game, visible_cells, None, hex_size, ox, oy, fonts)
+            draw_board(screen, game, visible_cells, None, hex_size, ox, oy, fonts, ai_stats)
             result = ai.get_move(game)
             if ai.pair_moves:
                 for q, r in result:
@@ -246,9 +253,10 @@ def main():
                         game.make_move(q, r)
             else:
                 game.make_move(*result)
+            ai_stats = (ai.last_depth, ai._nodes)
             last_ai_time = pygame.time.get_ticks()
 
-        draw_board(screen, game, visible_cells, hover_hex, hex_size, ox, oy, fonts)
+        draw_board(screen, game, visible_cells, hover_hex, hex_size, ox, oy, fonts, ai_stats)
         clock.tick(60)
 
 

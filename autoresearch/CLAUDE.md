@@ -141,7 +141,7 @@ commit	win_rate	avg_depth	status	description
 ```
 
 1. git commit hash (short, 7 chars)
-2. win rate of new bot vs champion (e.g. 0.60 for 60%) — use 0.00 for crashes
+2. total win rate of new bot vs champion (the "total win rate" line from the output, which counts wins + half draws — e.g. 0.60 for 60%) — use 0.00 for crashes
 3. average search depth achieved (e.g. 3.2) — use 0.0 for crashes
 4. status: `keep`, `discard`, or `crash`
 5. short text description of what this experiment tried
