@@ -156,6 +156,8 @@ c3d4e5f	0.45	4.2	discard	MCTS with random rollouts
 d4e5f6g	0.00	0.0	crash	syntax error in eval function
 ```
 
+python -c "import pickle; import numpy as np; d=pickle.load(open('learned_eval/data/positions.pkl','rb')); s=np.array([p[2] for p in d]); print(f'Count: {len(d)}, Tuple: {len(d[0])}, Range: [{s.min()}, {s.max()}], Mean: {s.mean():.0f}')"
+
 ## The experiment loop
 
 The experiment runs on a dedicated branch (e.g. `autoresearch/mar19`).

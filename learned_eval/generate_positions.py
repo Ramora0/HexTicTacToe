@@ -1,18 +1,12 @@
-"""Generate training positions with minimax search scores and game outcomes.
+"""Generate training positions via epsilon-greedy self-play.
 
-Plays games via self-play, snapshots positions after each full turn,
-and stores both the minimax search result (the bot's best score after
-iterative deepening) and the actual game outcome (+1000 current player
-won, -1000 lost, 0 no winner) for each.
-
-To ensure diversity, one of the bot's two moves per turn is replaced
-with a random candidate when the position has already been seen.
-
-Saves incrementally to disk. Resume by running again with the same output path.
+Plays games between two minimax bots. Each stone has an independent
+probability (epsilon) of being replaced with a random candidate move.
+Only decisive games (with a winner) are kept; draws are discarded.
 
 Output format: list of (board, current_player, search_score, win_score, game_id)
 
-Usage: python -m learned_eval.generate_positions [--time-limit 0.05]
+Usage: python -m learned_eval.generate_positions [--epsilon 0.1] [--target 47000]
 """
 
 import os
@@ -28,22 +22,14 @@ from game import HexGame, Player
 from ai import MinimaxBot, get_candidates
 
 MAX_MOVES = 200
-TARGET_POSITIONS = 50_000
-SAVE_INTERVAL = 50  # save every N batches
-
-
-def _board_key(board, current_player):
-    """Hashable key for a (board, current_player) pair."""
-    return hash((frozenset(board.items()), current_player))
+TARGET_POSITIONS = 47_000
+SAVE_INTERVAL = 50
+SCORE_SCALE = 20_000
 
 
 def play_game_collect(args):
-    """Play one game, collecting positions with search scores and game outcome.
-
-    At each turn, if the position has already been seen, replace one of
-    the bot's two moves with a random candidate to diversify.
-    """
-    time_limit, game_idx, seen_keys = args
+    """Play one epsilon-greedy game, return positions if decisive."""
+    time_limit, epsilon, game_idx = args
     rng = random.Random(game_idx)
     game = HexGame(win_length=6)
     bot_a = MinimaxBot(time_limit=time_limit)
@@ -56,33 +42,21 @@ def play_game_collect(args):
         board_snap = dict(game.board)
         cp = game.current_player
 
-        seen = board_snap and _board_key(board_snap, cp) in seen_keys
-
-        # Always get the bot's moves (this runs minimax search)
         bot = bot_a if cp == Player.A else bot_b
         bot_moves = bot.get_move(game)
 
-        # Snapshot the position with the search score from minimax
         if board_snap:
-            search_score = bot.last_score
+            search_score = bot.last_score / SCORE_SCALE
             positions.append((board_snap, cp, search_score))
 
-        if not seen:
-            moves = bot_moves
-        else:
-            # Replace one of the bot's moves with a random candidate
-            moves = list(bot_moves)
-            if len(moves) == 2:
+        # Epsilon-greedy: independently randomize each stone
+        moves = list(bot_moves)
+        for i in range(len(moves)):
+            if rng.random() < epsilon:
                 candidates = get_candidates(game)
                 alt = [c for c in candidates if c not in moves]
                 if alt:
-                    replace_idx = rng.randint(0, 1)
-                    moves[replace_idx] = rng.choice(alt)
-            elif len(moves) == 1:
-                candidates = get_candidates(game)
-                alt = [c for c in candidates if c not in moves]
-                if alt:
-                    moves[0] = rng.choice(alt)
+                    moves[i] = rng.choice(alt)
 
         for q, r in moves:
             if game.game_over:
@@ -91,117 +65,107 @@ def play_game_collect(args):
                 break
             total_stones += 1
 
-    # Determine game outcome
     winner = game.winner
+
+    # Discard draws
+    if winner == Player.NONE:
+        return None, total_stones
 
     # Tag each position with win_score from current_player's perspective
     tagged = []
     for board_snap, cp, eval_score in positions:
-        if winner == Player.NONE:
-            win_score = 0.0
-        elif winner == cp:
-            win_score = 1000.0
-        else:
-            win_score = -1000.0
-
-        bk = _board_key(board_snap, cp)
-        tagged.append((bk, board_snap, cp, eval_score, win_score, game_idx))
+        win_score = 1.0 if winner == cp else -1.0
+        tagged.append((board_snap, cp, eval_score, win_score, game_idx))
 
     return tagged, total_stones
 
 
-def _load_existing(path):
-    """Load existing positions from disk, returning the unique dict."""
-    unique = {}
-    if os.path.exists(path):
-        with open(path, "rb") as f:
-            positions = pickle.load(f)
-        for entry in positions:
-            if len(entry) == 5:
-                board, cp, eval_score, win_score, game_id = entry
-            else:
-                # Legacy 4-tuple format (eval only, no win data)
-                board, cp, eval_score, game_id = entry
-                win_score = 0.0
-            bk = _board_key(board, cp)
-            unique[bk] = [board, cp, eval_score, win_score, game_id]
-        print(f"Resumed: loaded {len(unique)} existing positions from {path}")
-    return unique
-
-
-def _save(unique, path):
-    """Save current positions to disk."""
-    positions = [(v[0], v[1], v[2], v[3], v[4]) for v in unique.values()]
+def _save(all_positions, path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "wb") as f:
-        pickle.dump(positions, f)
+        pickle.dump(all_positions, f)
     os.replace(tmp, path)
 
 
 def main():
     import argparse
-    from tqdm import tqdm
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--time-limit", type=float, default=0.05)
+    parser.add_argument("--epsilon", type=float, default=0.1)
     parser.add_argument("--target", type=int, default=TARGET_POSITIONS)
     parser.add_argument("--output", default=os.path.join(os.path.dirname(__file__), "data", "positions.pkl"))
     args = parser.parse_args()
 
     workers = os.cpu_count() or 1
-    batch_size = max(workers * 2, 20)
 
-    unique = _load_existing(args.output)
+    all_positions = []
     games_played = 0
+    games_decisive = 0
+    games_drawn = 0
     game_idx = int(time.time() * 1000) % 1_000_000
     games_since_save = 0
     total_moves = 0
 
-    pbar = tqdm(total=args.target, initial=len(unique), unit="pos", desc="Unique positions")
+    print(f"Generating positions: epsilon={args.epsilon}, target={args.target}, "
+          f"workers={workers}, time_limit={args.time_limit}")
 
     try:
         with Pool(workers) as pool:
-            while len(unique) < args.target:
-                seen_keys = frozenset(unique.keys())
-                task_args = [(args.time_limit, game_idx + i, seen_keys)
-                             for i in range(batch_size)]
-                game_idx += batch_size
+            pending = []
 
-                for game_positions, move_count in pool.imap_unordered(play_game_collect, task_args):
-                    prev_unique = len(unique)
-                    games_played += 1
-                    games_since_save += 1
-                    total_moves += move_count
-                    for bk, board_snap, cp, eval_score, win_score, gid in game_positions:
-                        if bk not in unique:
-                            unique[bk] = [board_snap, cp, eval_score, win_score, gid]
+            def _submit():
+                nonlocal game_idx
+                ar = pool.apply_async(play_game_collect,
+                                      ((args.time_limit, args.epsilon, game_idx),))
+                pending.append(ar)
+                game_idx += 1
 
-                    new = len(unique) - prev_unique
-                    pbar.update(new)
-                    pbar.set_postfix(games=games_played, unique=len(unique))
+            for _ in range(workers * 2):
+                _submit()
 
-                if games_since_save >= SAVE_INTERVAL * batch_size:
-                    _save(unique, args.output)
+            while len(all_positions) < args.target:
+                ar = pending.pop(0)
+                game_positions, move_count = ar.get()
+
+                games_played += 1
+                games_since_save += 1
+                total_moves += move_count
+
+                if game_positions is not None:
+                    games_decisive += 1
+                    all_positions.extend(game_positions)
+                else:
+                    games_drawn += 1
+
+                if games_played % 100 == 0:
+                    pct_decisive = games_decisive / games_played * 100 if games_played else 0
+                    print(f"  {len(all_positions):,}/{args.target:,} positions | "
+                          f"{games_played} games ({pct_decisive:.0f}% decisive)")
+
+                _submit()
+
+                if games_since_save >= SAVE_INTERVAL:
+                    _save(all_positions, args.output)
                     games_since_save = 0
 
     except KeyboardInterrupt:
-        print(f"\n\nInterrupted! Saving {len(unique)} positions...")
+        print(f"\n\nInterrupted! Saving {len(all_positions)} positions...")
 
-    pbar.close()
-    _save(unique, args.output)
+    _save(all_positions, args.output)
 
-    evals = [v[2] for v in unique.values()]
-    wins = [v[3] for v in unique.values()]
+    evals = [p[2] for p in all_positions]
+    wins = [p[3] for p in all_positions]
     avg_moves = total_moves / games_played if games_played else 0
     win_count = sum(1 for w in wins if w > 0)
     loss_count = sum(1 for w in wins if w < 0)
-    draw_count = sum(1 for w in wins if w == 0)
-    print(f"\nCollected {len(unique)} unique positions in {games_played} games")
+    print(f"\nCollected {len(all_positions):,} positions from {games_decisive} decisive games "
+          f"({games_drawn} draws discarded)")
     print(f"  Avg moves/game: {avg_moves:.1f}")
-    print(f"  Eval range: [{min(evals):.0f}, {max(evals):.0f}]")
-    print(f"  Eval mean: {sum(evals)/len(evals):.0f}")
-    print(f"  Win/Loss/Draw: {win_count}/{loss_count}/{draw_count}")
+    print(f"  Eval range: [{min(evals):.2f}, {max(evals):.2f}]")
+    print(f"  Eval mean: {sum(evals)/len(evals):.4f}")
+    print(f"  Win/Loss: {win_count}/{loss_count}")
     print(f"Saved to {args.output}")
 
 

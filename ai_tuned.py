@@ -85,17 +85,21 @@ _DEFAULT_PATTERN_PATH = os.path.join(
 def _load_pattern_values(path):
     """Load pattern_values.json and build a flat lookup array.
 
+    Values in JSON are normalized; multiplied by _meta.score_scale to recover
+    eval-scale units (comparable to LINE_SCORES).
     Returns PAT_VALUE[pattern_int] = eval value, where pattern is encoded
     with current_player=1, opponent=2.
     """
     with open(path) as f:
         raw = json.load(f)
 
+    score_scale = raw.get("_meta", {}).get("score_scale", 1)
+
     # Parse the canonical pattern values
-    canon_values = [0.0] * len(raw)
     canon_by_str = {}
     for pat_str, val in raw.items():
-        canon_by_str[pat_str] = val
+        if pat_str != "_meta":
+            canon_by_str[pat_str] = val * score_scale
 
     # Build flat lookup from pattern_table's precomputed mappings
     from learned_eval.pattern_table import CANON_PATTERNS
