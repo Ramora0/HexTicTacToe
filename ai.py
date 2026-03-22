@@ -19,9 +19,9 @@ from game import Player, HEX_DIRECTIONS
 LINE_SCORES = [0, 0, 8, 1200, 3000, 50000, 100000]  # eval score per stone count in a window
 _CANDIDATE_CAP = 11          # max single-cell candidates in minimax
 _ROOT_CANDIDATE_CAP = 13     # max single-cell candidates at root
-_NEIGHBOR_DIST = 1           # hex distance for candidate generation
+_NEIGHBOR_DIST = 2           # hex distance for candidate generation
 _DELTA_WEIGHT = 1.5          # weight of eval delta vs history in move ordering
-_MAX_QDEPTH = 8              # max depth for quiescence threat search
+_MAX_QDEPTH = 16             # max depth for quiescence threat search
 
 
 class TimeUp(Exception):
@@ -575,8 +575,14 @@ class MinimaxBot(Bot):
             return []
 
         if len(primary) >= 2:
-            # All pairs of threat/block cells — no delta needed
-            return list(combinations(primary, 2))
+            # All pairs of threat/block cells — sorted by move_delta sum
+            pairs = list(combinations(primary, 2))
+            pairs.sort(
+                key=lambda p: self._move_delta(p[0][0], p[0][1], is_a)
+                            + self._move_delta(p[1][0], p[1][1], is_a),
+                reverse=maximizing,
+            )
+            return pairs
 
         # Single threat cell — pair with greedy best companion by move_delta
         tc = primary[0]
