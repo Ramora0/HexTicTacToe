@@ -112,11 +112,14 @@ def extract_features(board, current_player):
     return features
 
 
-def build_dataset(positions, target_idx=2, win_idx=None, binary_targets=False):
+def build_dataset(positions, target_idx=2, win_idx=None, binary_targets=False,
+                  temporal_alpha=0.0):
     """Convert positions to sparse feature matrix and target vector.
 
     For eval targets: tanh compresses continuous scores to (-1, +1).
     For binary win/loss targets (binary_targets=True): targets used as-is (±1).
+    If temporal_alpha > 0, positions are weighted by game progress:
+      weight = (board_size / max_board_size) ** alpha
     """
     print(f"Extracting features from {len(positions)} positions (target=entry[{target_idx}])...")
     t0 = time.time()
@@ -125,6 +128,7 @@ def build_dataset(positions, target_idx=2, win_idx=None, binary_targets=False):
     feat_values = []
     raw_targets = []
     win_scores = []
+    board_sizes = []
 
     for i, entry in enumerate(positions):
         board, cp = entry[0], entry[1]
@@ -137,6 +141,7 @@ def build_dataset(positions, target_idx=2, win_idx=None, binary_targets=False):
             feat_indices.append(idx)
             feat_values.append(vals)
             raw_targets.append(target)
+            board_sizes.append(len(board))
             if win_idx is not None:
                 win_scores.append(entry[win_idx])
 
@@ -150,7 +155,15 @@ def build_dataset(positions, target_idx=2, win_idx=None, binary_targets=False):
         targets = raw_targets  # already ±1, no transformation
     else:
         targets = np.tanh(raw_targets)
-    weights = np.ones(len(targets), dtype=np.float64)
+
+    if temporal_alpha > 0 and board_sizes:
+        board_sizes = np.array(board_sizes, dtype=np.float64)
+        max_bs = board_sizes.max()
+        weights = (board_sizes / max_bs) ** temporal_alpha
+        print(f"  Temporal weighting (alpha={temporal_alpha}): "
+              f"min_weight={weights.min():.3f}, mean={weights.mean():.3f}")
+    else:
+        weights = np.ones(len(targets), dtype=np.float64)
 
     normal = raw_targets[np.abs(raw_targets) < 4999]
     n_forced = len(raw_targets) - len(normal)
@@ -210,14 +223,23 @@ def _init_from_line_scores(num_params):
     return params
 
 
-def train(train_data, val_data, num_params, epochs=200, lr=0.01, l2=0.001):
+def train(train_data, val_data, num_params, epochs=200, lr=0.01, l2=0.001,
+          reg_toward_init=False, init_weights=None):
     """Train pattern values using Adam on tanh-space MSE + L2.
 
     pred = tanh(dot(params, features)),  target = tanh(score).
     Scores are pre-normalized by SCORE_SCALE so everything is ~O(1).
+
+    If init_weights is a numpy array, use it as both initial params and L2 anchor.
+    If reg_toward_init=True (and no init_weights), L2 regularizes toward LINE_SCORES init.
     """
     tr_idx, tr_vals, tr_targets, tr_weights, tr_wins = train_data
-    params = _init_from_line_scores(num_params)
+    if init_weights is not None:
+        params = init_weights.copy()
+        init_params = init_weights.copy()
+    else:
+        params = _init_from_line_scores(num_params)
+        init_params = params.copy() if reg_toward_init else None
     n = len(tr_targets)
 
     # Adam state
@@ -263,7 +285,10 @@ def train(train_data, val_data, num_params, epochs=200, lr=0.01, l2=0.001):
         scaled_res = 2.0 * tr_weights * residuals * sig_deriv / n
         for i in range(n):
             grad[tr_idx[i]] += scaled_res[i] * tr_vals[i]
-        grad += 2 * l2 * params
+        if init_params is not None:
+            grad += 2 * l2 * (params - init_params)
+        else:
+            grad += 2 * l2 * params
 
         # Adam update with linear warmup + cosine decay
         t_adam = epoch + 1
@@ -390,6 +415,13 @@ def main():
                         help="Keep every Nth position per game (by board size) to reduce correlation")
     parser.add_argument("--window-length", type=int, default=6, choices=[6, 7, 8],
                         help="Pattern window length (default 6)")
+    parser.add_argument("--reg-toward-init", action="store_true",
+                        help="Regularize toward LINE_SCORES init instead of toward zero")
+    parser.add_argument("--init-weights", type=str, default=None,
+                        help="Path to .npy file to use as initial params and L2 anchor")
+    parser.add_argument("--temporal-weight", type=float, default=0.0,
+                        help="Weight positions by game progress: weight = (board_size/max_board_size)^alpha. "
+                             "0 = disabled (default), try 1.0 or 2.0")
     args = parser.parse_args()
 
     # Initialize pattern tables for the requested window length
@@ -452,11 +484,20 @@ def main():
 
     # Binary targets when training on win labels (±1 used directly, no tanh)
     binary = args.target == "win"
-    train_data = build_dataset(train_pos, target_idx=target_idx, win_idx=win_idx, binary_targets=binary)
-    val_data = build_dataset(val_pos, target_idx=target_idx, win_idx=win_idx, binary_targets=binary)
+    tw = args.temporal_weight
+    train_data = build_dataset(train_pos, target_idx=target_idx, win_idx=win_idx,
+                               binary_targets=binary, temporal_alpha=tw)
+    val_data = build_dataset(val_pos, target_idx=target_idx, win_idx=win_idx,
+                             binary_targets=binary, temporal_alpha=tw)
 
+    init_w = None
+    if args.init_weights:
+        init_w = np.load(args.init_weights)
+        print(f"Loaded init weights from {args.init_weights} ({len(init_w)} params)")
     params = train(train_data, val_data, NUM_CANON,
-                   epochs=args.epochs, lr=args.lr, l2=args.l2)
+                   epochs=args.epochs, lr=args.lr, l2=args.l2,
+                   reg_toward_init=args.reg_toward_init,
+                   init_weights=init_w)
     save_results(params, args.output_dir)
 
 

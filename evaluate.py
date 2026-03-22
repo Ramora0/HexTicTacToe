@@ -296,9 +296,21 @@ if __name__ == "__main__":
                         help="Number of games to play (default: 20)")
     parser.add_argument("--no-tqdm", action="store_true",
                         help="Disable progress bar")
+    parser.add_argument("--pattern-a", type=str, default=None,
+                        help="Pattern values JSON for bot A (forces ai_tuned)")
+    parser.add_argument("--pattern-b", type=str, default=None,
+                        help="Pattern values JSON for bot B (forces ai_tuned)")
     parsed = parser.parse_args()
 
-    a = load_bot(parsed.bot_a, time_limit=0.1)
-    b = load_bot(parsed.bot_b, time_limit=0.1)
+    if parsed.pattern_a:
+        from ai_tuned import MinimaxBot as TunedBot
+        a = NamedBotWrapper(TunedBot(pattern_path=parsed.pattern_a), parsed.pattern_a)
+    else:
+        a = load_bot(parsed.bot_a, time_limit=0.1)
+    if parsed.pattern_b:
+        from ai_tuned import MinimaxBot as TunedBot
+        b = NamedBotWrapper(TunedBot(pattern_path=parsed.pattern_b), parsed.pattern_b)
+    else:
+        b = load_bot(parsed.bot_b, time_limit=0.1)
 
     evaluate(a, b, num_games=parsed.num_games, use_tqdm=not parsed.no_tqdm)

@@ -163,6 +163,7 @@ class MinimaxBot(Bot):
         self._player = game.current_player
         self._nodes = 0
         self.last_depth = 0
+        self.last_score = 0
         self.last_ebf = 0
         if len(self._tt) > 1_000_000:
             self._tt.clear()
@@ -287,6 +288,7 @@ class MinimaxBot(Bot):
                 result, scores = self._search_root(game, turns, depth)
                 best_move = list(result)
                 self.last_depth = depth
+                self.last_score = scores.get(result, 0)
                 nodes_this_depth = self._nodes - nodes_before
                 if nodes_this_depth > 1:
                     self.last_ebf = round(nodes_this_depth ** (1.0 / depth), 1)

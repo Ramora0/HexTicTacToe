@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(source .venv/Scripts/activate)",
+      "Bash(python evaluate.py ai og_ai -n 400 --no-tqdm)",
+      "Bash(python evaluate.py ai og_ai -n 100 --no-tqdm)",
+      "Bash(python -c \":*)",
+      "Bash(python:*)",
+      "Bash(PYTHONIOENCODING=utf-8 python evaluate.py ai_tuned ai -n 20 2>&1)",
+      "Bash(PYTHONIOENCODING=utf-8 python evaluate.py ai_tuned ai -n 100 2>&1)",
+      "Bash(PYTHONIOENCODING=utf-8 python evaluate.py ai_tuned ai -n 100 --no-tqdm 2>&1)",
+      "Bash(PYTHONIOENCODING=utf-8 python evaluate.py ai_tuned ai -n 100 --no-tqdm --pattern-a learned_eval/results/iter1.json 2>&1)"
+    ]
+  }
+}

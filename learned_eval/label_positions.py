@@ -23,7 +23,7 @@ SCORE_SCALE = 20_000
 
 def _eval_position(args):
     """Evaluate a single position with MinimaxBot."""
-    board, cp, win_score, game_id, time_limit = args
+    board, cp, win_score, game_id, time_limit, pattern_path = args
 
     game = HexGame(win_length=6)
     # Replay stones to build game state
@@ -37,7 +37,11 @@ def _eval_position(args):
     if not board:
         return board, cp, 0.0, win_score, game_id
 
-    bot = MinimaxBot(time_limit=time_limit)
+    if pattern_path:
+        from ai_tuned import MinimaxBot as TunedBot
+        bot = TunedBot(time_limit=time_limit, pattern_path=pattern_path)
+    else:
+        bot = MinimaxBot(time_limit=time_limit)
     bot.get_move(game)
     search_score = bot.last_score / SCORE_SCALE
 
@@ -53,6 +57,8 @@ def main():
     parser.add_argument("--output", default=os.path.join(
         os.path.dirname(__file__), "data", "positions_human_labelled.pkl"))
     parser.add_argument("--time-limit", type=float, default=0.05)
+    parser.add_argument("--pattern-path", type=str, default=None,
+                        help="Path to pattern_values.json for ai_tuned (default: use hand-tuned ai)")
     args = parser.parse_args()
 
     with open(args.input, "rb") as f:
@@ -61,6 +67,9 @@ def main():
 
     # Parse input format: 4-tuple (board, cp, win_label, game_id)
     is_4tuple = len(positions[0]) == 4
+    pattern_path = args.pattern_path
+    if pattern_path:
+        print(f"Using ai_tuned with pattern_path={pattern_path}")
     tasks = []
     for p in positions:
         board, cp = p[0], p[1]
@@ -72,7 +81,7 @@ def main():
             game_id = p[4]
         # Normalize win labels to ±1
         win_score = 1.0 if raw_win > 0 else -1.0
-        tasks.append((board, cp, win_score, game_id, args.time_limit))
+        tasks.append((board, cp, win_score, game_id, args.time_limit, pattern_path))
 
     workers = os.cpu_count() or 1
     print(f"Evaluating with MinimaxBot (time_limit={args.time_limit}, workers={workers})...")
