@@ -549,40 +549,49 @@ class MinimaxBot(Bot):
         return self._filter_turns_by_threats(game, turns)
 
     def _generate_threat_turns(self, game, my_threats, opp_threats):
-        """Generate threat turns: one stone on threat cell, companion chosen greedily."""
+        """Generate threat turns: block opponent threats first, else make own.
+
+        When blocking: pairs of blocking cells (need 2 stones) + each blocking
+        cell with greedy best companion (need 1 stone).
+        When attacking: pairs of own threat cells + each with greedy companion.
+        Greedy companion chosen by _move_delta for the single-threat-cell case.
+        """
         win_turn = self._find_instant_win(game, game.current_player)
         if win_turn:
             return [win_turn]
-
-        all_threats = my_threats | opp_threats
-        threat_cells = [c for c in all_threats if c in self._cand_set]
-        if not threat_cells:
-            return []
 
         is_a = game.current_player == Player.A
         maximizing = game.current_player == self._player
         sign = 1 if maximizing else -1
 
-        # Precompute deltas and sort candidates for greedy companion selection
+        opp_cells = [c for c in opp_threats if c in self._cand_set]
+        my_cells = [c for c in my_threats if c in self._cand_set]
+
+        if opp_cells:
+            primary = opp_cells
+        elif my_cells:
+            primary = my_cells
+        else:
+            return []
+
+        if len(primary) >= 2:
+            # All pairs of threat/block cells — no delta needed
+            return list(combinations(primary, 2))
+
+        # Single threat cell — pair with greedy best companion by move_delta
+        tc = primary[0]
         cand_list = list(self._cand_set)
-        deltas = {c: self._move_delta(c[0], c[1], is_a) for c in cand_list}
-        cand_by_delta = sorted(cand_list, key=lambda c: deltas[c] * sign, reverse=True)
-
-        seen = set()
-        turns = []
-        for tc in threat_cells:
-            for comp in cand_by_delta:
-                if comp != tc:
-                    turn = (min(tc, comp), max(tc, comp))
-                    if turn not in seen:
-                        seen.add(turn)
-                        turns.append(turn)
-                    break
-
-        turns.sort(
-            key=lambda t: (deltas.get(t[0], 0) + deltas.get(t[1], 0)) * sign,
-            reverse=True)
-        return turns
+        best_comp = None
+        best_delta = -math.inf
+        for c in cand_list:
+            if c != tc:
+                d = self._move_delta(c[0], c[1], is_a) * sign
+                if d > best_delta:
+                    best_delta = d
+                    best_comp = c
+        if best_comp is None:
+            return []
+        return [(min(tc, best_comp), max(tc, best_comp))]
 
     def _quiescence(self, game, alpha, beta, qdepth):
         """Extend search while threats exist, considering only threat moves."""
