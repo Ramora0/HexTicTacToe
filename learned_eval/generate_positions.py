@@ -111,6 +111,9 @@ def main():
     print(f"Generating positions: epsilon={args.epsilon}, target={args.target}, "
           f"workers={workers}, time_limit={args.time_limit}")
 
+    from tqdm import tqdm
+    pbar = tqdm(total=args.target, unit="pos", desc="Positions")
+
     try:
         with Pool(workers) as pool:
             pending = []
@@ -135,15 +138,13 @@ def main():
 
                 if game_positions is not None:
                     games_decisive += 1
+                    prev = len(all_positions)
                     all_positions.extend(game_positions)
+                    pbar.update(len(all_positions) - prev)
                 else:
                     games_drawn += 1
 
-                if games_played % 100 == 0:
-                    pct_decisive = games_decisive / games_played * 100 if games_played else 0
-                    print(f"  {len(all_positions):,}/{args.target:,} positions | "
-                          f"{games_played} games ({pct_decisive:.0f}% decisive)")
-
+                pbar.set_postfix(games=games_played, decisive=games_decisive)
                 _submit()
 
                 if games_since_save >= SAVE_INTERVAL:
@@ -152,6 +153,8 @@ def main():
 
     except KeyboardInterrupt:
         print(f"\n\nInterrupted! Saving {len(all_positions)} positions...")
+
+    pbar.close()
 
     _save(all_positions, args.output)
 
