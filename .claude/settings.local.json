@@ -9,7 +9,11 @@
       "Bash(PYTHONIOENCODING=utf-8 python evaluate.py ai_tuned ai -n 20 2>&1)",
       "Bash(PYTHONIOENCODING=utf-8 python evaluate.py ai_tuned ai -n 100 2>&1)",
       "Bash(PYTHONIOENCODING=utf-8 python evaluate.py ai_tuned ai -n 100 --no-tqdm 2>&1)",
-      "Bash(PYTHONIOENCODING=utf-8 python evaluate.py ai_tuned ai -n 100 --no-tqdm --pattern-a learned_eval/results/iter1.json 2>&1)"
+      "Bash(PYTHONIOENCODING=utf-8 python evaluate.py ai_tuned ai -n 100 --no-tqdm --pattern-a learned_eval/results/iter1.json 2>&1)",
+      "Bash(ls:*)",
+      "Bash(grep -E \"\\\\.py$\")",
+      "Bash(PYTHONIOENCODING=utf-8 python evaluate.py ai ai -n 20 --pattern-b learned_eval/results_epsilon_eval/pattern_values.json --no-tqdm 2>&1)",
+      "Bash(PYTHONIOENCODING=utf-8 python evaluate.py ai -n 20 --pattern-b learned_eval/results_epsilon_win/pattern_values.json --no-tqdm 2>&1)"
     ]
   }
 }

@@ -3,7 +3,7 @@
 Each window is N cells along a hex axis. Cell states: 0=empty, 1=current player, 2=opponent.
 Symmetries:
   - Flipping (reverse): same value
-  - NO piece swap symmetry — offense and defense can have different weights
+  - Piece swap (1↔2): negates value (symmetric game)
 """
 
 WINDOW_LENGTH = 6
