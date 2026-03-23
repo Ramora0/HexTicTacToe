@@ -1,12 +1,15 @@
-"""Play out games from saved positions using ai_tuned, recording win/loss.
+"""Play out games from saved positions, recording win/loss for all positions.
 
-For each position, ai_tuned plays both sides to completion.
-The outcome (win/loss from current_player's perspective) is recorded.
+For each starting position, the bot plays both sides to completion.
+Every intermediate position during the playout is saved with the game outcome.
 
-Output: 5-tuple (board, current_player, 0.0, win_score, game_id)
-  where win_score = +1 if current_player wins, -1 if loses, 0 if draw.
+Output: 7-tuple (board, current_player, moves_from_human, win_score,
+                  playout_id, human_game_id, is_human_start)
+  playout_id: unique per starting position (use for train/val split)
+  human_game_id: original human game this started from
+  win_score: +1 if current_player wins, -1 if loses, 0 if draw
 
-Usage: python -m learned_eval.playout_positions [--input data/positions_human.pkl]
+Usage: python -m learned_eval.playout_positions [--input data/positions_human.pkl] [--use-ai]
 """
 
 import os
@@ -42,8 +45,11 @@ def _board_has_win(board):
 
 
 def _playout_position(args):
-    """Play out a single position with the chosen bot on both sides."""
-    board, cp, original_win, game_id, time_limit, pattern_path, use_ai = args
+    """Play out a single position with the chosen bot on both sides.
+
+    Returns a list of 7-tuples for every position seen during the playout.
+    """
+    board, cp, original_win, human_game_id, time_limit, pattern_path, use_ai, playout_id = args
 
     game = HexGame(win_length=6)
     game.board = dict(board)
@@ -61,6 +67,9 @@ def _playout_position(args):
         bot_b = TunedBot(time_limit=time_limit, pattern_path=pattern_path)
     bots = {Player.A: bot_a, Player.B: bot_b}
 
+    # Collect snapshots: (board_dict, current_player, moves_from_human)
+    snapshots = [(dict(board), cp, 0)]
+
     total_moves = 0
     forfeit_player = None
     while not game.game_over and total_moves < MAX_MOVES:
@@ -77,24 +86,32 @@ def _playout_position(args):
             total_moves += 1
 
         if invalid:
-            # Same as evaluate.py: invalid move = forfeit for current player
             forfeit_player = player
             break
 
+        # Snapshot after each turn (both stones placed)
+        if not game.game_over:
+            snapshots.append((dict(game.board), game.current_player, total_moves))
+
     if forfeit_player is not None:
-        # The player who made the invalid move loses
         winner = Player.B if forfeit_player == Player.A else Player.A
     else:
         winner = game.winner
 
-    if winner == Player.NONE:
-        win_score = 0.0
-    elif winner == cp:
-        win_score = 1.0
-    else:
-        win_score = -1.0
+    # Tag all snapshots with win/loss from their current_player's perspective
+    results = []
+    for snap_board, snap_cp, moves_from_human in snapshots:
+        if winner == Player.NONE:
+            win_score = 0.0
+        elif winner == snap_cp:
+            win_score = 1.0
+        else:
+            win_score = -1.0
+        is_human = (moves_from_human == 0)
+        results.append((snap_board, snap_cp, moves_from_human, win_score,
+                        playout_id, human_game_id, is_human))
 
-    return board, cp, 0.0, win_score, game_id
+    return results
 
 
 def main():
@@ -150,7 +167,7 @@ def main():
     if args.subsample > 1:
         sampled = []
         for gid, game_pos in by_game.items():
-            game_pos.sort(key=lambda p: len(p[0]))  # sort by board size
+            game_pos.sort(key=lambda p: len(p[0]))
             sampled.extend(game_pos[::args.subsample])
     else:
         sampled = positions
@@ -163,52 +180,62 @@ def main():
     print(f"After subsampling (every {args.subsample}): {len(sampled)} positions "
           f"from {len(by_game)} games")
 
-    # Build task list
+    # Build task list with unique playout_id per starting position
     tasks = []
-    for p in sampled:
+    for i, p in enumerate(sampled):
         board, cp = p[0], p[1]
         if is_4tuple:
             raw_win = p[2]
-            game_id = p[3]
+            human_game_id = p[3]
         else:
             raw_win = p[3]
-            game_id = p[4]
+            human_game_id = p[4]
         win_score = 1.0 if raw_win > 0 else -1.0
-        tasks.append((board, cp, win_score, game_id, args.time_limit, args.pattern_path, args.use_ai))
+        playout_id = i  # unique per starting position
+        tasks.append((board, cp, win_score, human_game_id, args.time_limit,
+                      args.pattern_path, args.use_ai, playout_id))
 
     workers = os.cpu_count() or 1
-    print(f"Playing out {len(tasks)} positions with ai_tuned "
+    bot_name = "ai.py" if args.use_ai else "ai_tuned"
+    print(f"Playing out {len(tasks)} positions with {bot_name} "
           f"(time_limit={args.time_limit}, workers={workers})...")
 
-    results = []
+    all_positions = []
     t0 = time.time()
-    wins = 0
-    losses = 0
-    draws = 0
+    playout_wins = 0
+    playout_losses = 0
+    playout_draws = 0
 
     with Pool(workers) as pool:
-        for result in tqdm(pool.imap(_playout_position, tasks, chunksize=8),
-                           total=len(tasks), desc="Playouts", unit="pos"):
-            results.append(result)
-            ws = result[3]
+        for playout_results in tqdm(pool.imap(_playout_position, tasks, chunksize=8),
+                                     total=len(tasks), desc="Playouts", unit="game"):
+            all_positions.extend(playout_results)
+            # Count outcome from the starting position (first entry)
+            ws = playout_results[0][3]
             if ws > 0:
-                wins += 1
+                playout_wins += 1
             elif ws < 0:
-                losses += 1
+                playout_losses += 1
             else:
-                draws += 1
+                playout_draws += 1
 
     elapsed = time.time() - t0
-    print(f"Done in {elapsed:.1f}s ({len(results)/elapsed:.1f} pos/s)")
-    print(f"  Wins: {wins}, Losses: {losses}, Draws: {draws}")
+    n_human = sum(1 for p in all_positions if p[6])
+    n_ai = len(all_positions) - n_human
+    print(f"Done in {elapsed:.1f}s ({len(tasks)/elapsed:.1f} games/s)")
+    print(f"  Playout outcomes: {playout_wins}W / {playout_losses}L / {playout_draws}D")
+    print(f"  Total positions: {len(all_positions)} ({n_human} human starts + {n_ai} ai continuations)")
+    moves_from = [p[2] for p in all_positions]
+    print(f"  Moves from human: min={min(moves_from)}, max={max(moves_from)}, "
+          f"avg={sum(moves_from)/len(moves_from):.1f}")
 
     # Save
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     tmp = args.output + ".tmp"
     with open(tmp, "wb") as f:
-        pickle.dump(results, f)
+        pickle.dump(all_positions, f)
     os.replace(tmp, args.output)
-    print(f"Saved {len(results)} positions to {args.output}")
+    print(f"Saved {len(all_positions)} positions to {args.output}")
 
 
 if __name__ == "__main__":

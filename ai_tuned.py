@@ -98,7 +98,8 @@ def _load_pattern_values(path):
 
     # Build pattern tables for this window length
     from learned_eval.pattern_table import build_arrays
-    canon_patterns, canon_index, canon_sign, num_canon, num_patterns = build_arrays(eval_length)
+    piece_swap = meta.get("piece_swap_symmetry", False)
+    canon_patterns, canon_index, canon_sign, num_canon, num_patterns = build_arrays(eval_length, enforce_piece_swap=piece_swap)
 
     # Parse the canonical pattern values
     canon_by_str = {}

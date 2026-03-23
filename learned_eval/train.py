@@ -18,6 +18,8 @@ import sys
 import time
 
 import numpy as np
+from scipy import sparse
+from tqdm import tqdm
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -61,8 +63,9 @@ def _board_has_win(board):
 def extract_features(board, current_player):
     """Extract sparse feature vector {canon_index: sum_of_signs} for a position.
 
-    Windows are 8 cells long. Patterns are read from current_player's perspective
+    Windows are 6 cells long. Patterns are read from current_player's perspective
     (current_player = 1, opponent = 2).
+    Returns None if the board has a completed 6-in-a-row (game already over).
     """
     opponent = Player.B if current_player == Player.A else Player.A
     features = {}
@@ -71,7 +74,6 @@ def extract_features(board, current_player):
     for (q, r) in board:
         for d_idx, (dq, dr) in enumerate(DIR_VECTORS):
             for k in range(WINDOW_LENGTH):
-                # Window starting at (q - k*dq, r - k*dr) along direction d_idx
                 sq = q - k * dq
                 sr = r - k * dr
                 wkey = (d_idx, sq, sr)
@@ -79,9 +81,10 @@ def extract_features(board, current_player):
                     continue
                 seen.add(wkey)
 
-                # Read the 8-cell pattern from current player's perspective
                 pat_int = 0
                 has_piece = False
+                my_count = 0
+                opp_count = 0
                 power = 1
                 for j in range(WINDOW_LENGTH):
                     cell = board.get((sq + j * dq, sr + j * dr))
@@ -90,11 +93,16 @@ def extract_features(board, current_player):
                     elif cell == current_player:
                         v = 1
                         has_piece = True
+                        my_count += 1
                     else:
                         v = 2
                         has_piece = True
+                        opp_count += 1
                     pat_int += v * power
                     power *= 3
+
+                if my_count == WINDOW_LENGTH or opp_count == WINDOW_LENGTH:
+                    return None
 
                 if not has_piece:
                     continue
@@ -102,7 +110,7 @@ def extract_features(board, current_player):
                 ci = CANON_INDEX[pat_int]
                 cs = CANON_SIGN[pat_int]
                 if cs == 0:
-                    continue  # self-symmetric or empty, forced zero
+                    continue
 
                 if ci in features:
                     features[ci] += cs
@@ -112,47 +120,73 @@ def extract_features(board, current_player):
     return features
 
 
+def _init_worker(wlen):
+    """Initialize pattern table globals in each worker process."""
+    global WINDOW_LENGTH, CANON_PATTERNS, CANON_INDEX, CANON_SIGN, NUM_CANON
+    if CANON_INDEX is None:
+        WINDOW_LENGTH = wlen
+        CANON_PATTERNS, CANON_INDEX, CANON_SIGN, NUM_CANON, _ = build_arrays(wlen)
+
+
+def _extract_one(args):
+    """Worker: extract features for a single position. Returns (row, features, target, win, board_size) or None."""
+    row, entry, target_idx, win_idx = args
+    board, cp = entry[0], entry[1]
+    features = extract_features(board, cp)
+    if not features:
+        return None
+    target = entry[target_idx]
+    win = entry[win_idx] if win_idx is not None else None
+    return (row, features, target, win, len(board))
+
+
 def build_dataset(positions, target_idx=2, win_idx=None, binary_targets=False,
                   temporal_alpha=0.0):
-    """Convert positions to sparse feature matrix and target vector.
+    """Convert positions to sparse CSR feature matrix and target vector.
 
-    For eval targets: tanh compresses continuous scores to (-1, +1).
-    For binary win/loss targets (binary_targets=True): targets used as-is (±1).
-    If temporal_alpha > 0, positions are weighted by game progress:
-      weight = (board_size / max_board_size) ** alpha
+    Uses multiprocessing for feature extraction and returns a scipy.sparse
+    CSR matrix for fast vectorized training.
     """
-    print(f"Extracting features from {len(positions)} positions (target=entry[{target_idx}])...")
+    from multiprocessing import Pool
     t0 = time.time()
+    n = len(positions)
 
-    feat_indices = []
-    feat_values = []
+    workers = os.cpu_count() or 1
+    args = [(i, positions[i], target_idx, win_idx) for i in range(n)]
+
+    # Collect sparse entries
+    rows, cols, vals = [], [], []
     raw_targets = []
     win_scores = []
     board_sizes = []
 
-    for i, entry in enumerate(positions):
-        board, cp = entry[0], entry[1]
-        target = entry[target_idx]
-
-        features = extract_features(board, cp)
-        if features:
-            idx = np.array(list(features.keys()), dtype=np.int32)
-            vals = np.array(list(features.values()), dtype=np.float64)
-            feat_indices.append(idx)
-            feat_values.append(vals)
+    with Pool(workers, initializer=_init_worker, initargs=(WINDOW_LENGTH,)) as pool:
+        for result in tqdm(pool.imap(_extract_one, args, chunksize=256),
+                           total=n, desc="Extracting features", unit="pos"):
+            if result is None:
+                continue
+            orig_row, features, target, win, bsize = result
+            dense_row = len(raw_targets)
             raw_targets.append(target)
-            board_sizes.append(len(board))
-            if win_idx is not None:
-                win_scores.append(entry[win_idx])
+            board_sizes.append(bsize)
+            if win is not None:
+                win_scores.append(win)
+            for ci, cv in features.items():
+                rows.append(dense_row)
+                cols.append(ci)
+                vals.append(cv)
 
-        if (i + 1) % 10000 == 0:
-            print(f"  {i+1}/{len(positions)} ({time.time()-t0:.1f}s)")
+    n_out = len(raw_targets)
+    feat_matrix = sparse.csr_matrix(
+        (np.array(vals, dtype=np.float64),
+         (np.array(rows, dtype=np.int32), np.array(cols, dtype=np.int32))),
+        shape=(n_out, NUM_CANON))
 
     raw_targets = np.array(raw_targets, dtype=np.float64)
     win_scores = np.array(win_scores, dtype=np.float64) if win_scores else None
 
     if binary_targets:
-        targets = raw_targets  # already ±1, no transformation
+        targets = raw_targets
     else:
         targets = np.tanh(raw_targets)
 
@@ -163,29 +197,27 @@ def build_dataset(positions, target_idx=2, win_idx=None, binary_targets=False,
         print(f"  Temporal weighting (alpha={temporal_alpha}): "
               f"min_weight={weights.min():.3f}, mean={weights.mean():.3f}")
     else:
-        weights = np.ones(len(targets), dtype=np.float64)
+        weights = np.ones(n_out, dtype=np.float64)
 
     normal = raw_targets[np.abs(raw_targets) < 4999]
     n_forced = len(raw_targets) - len(normal)
-    print(f"  Done in {time.time()-t0:.1f}s, {len(targets)} usable positions ({n_forced} forced wins)")
-    print(f"  Non-forced scores: mean={normal.mean():.3f}, std={normal.std():.3f}, "
-          f"range=[{normal.min():.2f}, {normal.max():.2f}]")
+    print(f"  Done in {time.time()-t0:.1f}s, {n_out} usable positions ({n_forced} forced wins)")
+    if len(normal) > 0:
+        print(f"  Non-forced scores: mean={normal.mean():.3f}, std={normal.std():.3f}, "
+              f"range=[{normal.min():.2f}, {normal.max():.2f}]")
     if win_scores is not None:
         n_decisive = np.sum(win_scores != 0)
         print(f"  Win scores: {int(np.sum(win_scores > 0))}W / {int(np.sum(win_scores < 0))}L / "
               f"{int(np.sum(win_scores == 0))}D ({n_decisive} decisive)")
-    return feat_indices, feat_values, targets, weights, win_scores
+    return feat_matrix, targets, weights, win_scores
 
 
-def _evaluate(params, feat_indices, feat_values, targets, weights,
-              win_scores=None):
+def _evaluate(params, feat_matrix, targets, weights, win_scores=None):
     """Compute MSE loss in tanh space, R², and game-outcome accuracy."""
     n = len(targets)
     if n == 0:
         return 0.0, 0.0, 0.0
-    raw_preds = np.zeros(n, dtype=np.float64)
-    for i in range(n):
-        raw_preds[i] = np.dot(params[feat_indices[i]], feat_values[i])
+    raw_preds = feat_matrix.dot(params)
     sig_preds = np.tanh(raw_preds)
     residuals = sig_preds - targets
     mse = float(np.mean(weights * residuals ** 2))
@@ -224,16 +256,17 @@ def _init_from_line_scores(num_params):
 
 
 def train(train_data, val_data, num_params, epochs=200, lr=0.01, l2=0.001,
-          reg_toward_init=False, init_weights=None):
-    """Train pattern values using Adam on tanh-space MSE + L2.
+          reg_toward_init=False, init_weights=None, batch_size=4096):
+    """Train pattern values using mini-batch Adam on tanh-space MSE + L2.
 
     pred = tanh(dot(params, features)),  target = tanh(score).
-    Scores are pre-normalized by SCORE_SCALE so everything is ~O(1).
+    Uses scipy.sparse CSR matrix for vectorized forward/backward passes.
+    Mini-batches provide stochastic regularization and faster updates.
 
     If init_weights is a numpy array, use it as both initial params and L2 anchor.
     If reg_toward_init=True (and no init_weights), L2 regularizes toward LINE_SCORES init.
     """
-    tr_idx, tr_vals, tr_targets, tr_weights, tr_wins = train_data
+    tr_matrix, tr_targets, tr_weights, tr_wins = train_data
     if init_weights is not None:
         params = init_weights.copy()
         init_params = init_weights.copy()
@@ -247,68 +280,88 @@ def train(train_data, val_data, num_params, epochs=200, lr=0.01, l2=0.001,
     v = np.zeros_like(params)
     beta1, beta2, eps = 0.9, 0.999, 1e-8
 
-    val_idx, val_vals, val_targets, val_weights, val_wins = val_data
+    val_matrix, val_targets, val_weights, val_wins = val_data
     has_val = len(val_targets) > 0
 
+    n_batches = max(1, (n + batch_size - 1) // batch_size)
     print(f"\nTraining {num_params} parameters on {n} train / {len(val_targets)} val "
-          f"for {epochs} epochs (lr={lr}, l2={l2})...")
+          f"for {epochs} epochs (lr={lr}, l2={l2}, batch_size={batch_size}, {n_batches} batches/epoch)...")
     t0 = time.time()
+    rng = np.random.RandomState(42)
+    global_step = 0
+    total_steps = epochs * n_batches
 
-    for epoch in range(epochs):
-        # Forward pass
-        raw_preds = np.zeros(n, dtype=np.float64)
-        for i in range(n):
-            raw_preds[i] = np.dot(params[tr_idx[i]], tr_vals[i])
-        sig_preds = np.tanh(raw_preds)
+    epoch_bar = tqdm(range(epochs), desc="Training", unit="epoch")
+    for epoch in epoch_bar:
+        # Shuffle indices each epoch
+        perm = rng.permutation(n)
 
-        # MSE loss in tanh space
-        residuals = sig_preds - tr_targets
-        mse_loss = np.mean(tr_weights * residuals ** 2)
+        epoch_loss = 0.0
+        for batch_start in range(0, n, batch_size):
+            batch_idx = perm[batch_start:batch_start + batch_size]
+            b_matrix = tr_matrix[batch_idx]
+            b_targets = tr_targets[batch_idx]
+            b_weights = tr_weights[batch_idx]
+            b_n = len(batch_idx)
+
+            # Forward pass
+            raw_preds = b_matrix.dot(params)
+            sig_preds = np.tanh(raw_preds)
+            residuals = sig_preds - b_targets
+            epoch_loss += float(np.sum(b_weights * residuals ** 2))
+
+            # Backward pass
+            sig_deriv = 1.0 - sig_preds ** 2
+            scaled_res = 2.0 * b_weights * residuals * sig_deriv / b_n
+
+            grad = b_matrix.T.dot(scaled_res)
+            if init_params is not None:
+                grad += 2 * l2 * (params - init_params)
+            else:
+                grad += 2 * l2 * params
+
+            # Adam update with linear warmup + cosine decay
+            global_step += 1
+            warmup_steps = 20 * n_batches
+            if global_step < warmup_steps:
+                cur_lr = lr * global_step / warmup_steps
+            else:
+                progress = (global_step - warmup_steps) / max(total_steps - warmup_steps, 1)
+                cur_lr = lr * 0.5 * (1 + math.cos(math.pi * progress))
+
+            m = beta1 * m + (1 - beta1) * grad
+            v = beta2 * v + (1 - beta2) * grad ** 2
+            m_hat = m / (1 - beta1 ** global_step)
+            v_hat = v / (1 - beta2 ** global_step)
+            params -= cur_lr * m_hat / (np.sqrt(v_hat) + eps)
+
+        mse_loss = epoch_loss / n
+        epoch_bar.set_postfix(mse=f"{mse_loss:.5f}", lr=f"{cur_lr:.5f}")
 
         if epoch % 20 == 0 or epoch == epochs - 1:
-            ss_res = float(np.sum(residuals ** 2))
+            # Full evaluation
+            raw_preds_full = tr_matrix.dot(params)
+            sig_full = np.tanh(raw_preds_full)
+            res_full = sig_full - tr_targets
+            ss_res = float(np.sum(res_full ** 2))
             ss_tot = float(np.sum((tr_targets - np.mean(tr_targets)) ** 2))
             r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
-            _, _, tr_acc = _evaluate(params, tr_idx, tr_vals, tr_targets, tr_weights, tr_wins)
+            _, _, tr_acc = _evaluate(params, tr_matrix, tr_targets, tr_weights, tr_wins)
             elapsed = time.time() - t0
             if has_val:
-                v_loss, v_r2, v_acc = _evaluate(params, val_idx, val_vals, val_targets,
+                v_loss, v_r2, v_acc = _evaluate(params, val_matrix, val_targets,
                                                 val_weights, val_wins)
-                print(f"  epoch {epoch:4d}: train mse={mse_loss:.6f} R²={r2:.4f} acc={tr_acc:.3f}"
-                      f"  |  val mse={v_loss:.6f} R²={v_r2:.4f} acc={v_acc:.3f}  ({elapsed:.1f}s)")
+                epoch_bar.write(
+                    f"  epoch {epoch:4d}: train mse={mse_loss:.6f} R²={r2:.4f} acc={tr_acc:.3f}"
+                    f"  |  val mse={v_loss:.6f} R²={v_r2:.4f} acc={v_acc:.3f}  ({elapsed:.1f}s)")
             else:
-                print(f"  epoch {epoch:4d}: mse={mse_loss:.6f} R²={r2:.4f} acc={tr_acc:.3f}  ({elapsed:.1f}s)")
-
-        # Backward pass: d/d_params MSE(tanh(pred), target)
-        sig_deriv = 1.0 - sig_preds ** 2
-        grad = np.zeros_like(params)
-        scaled_res = 2.0 * tr_weights * residuals * sig_deriv / n
-        for i in range(n):
-            grad[tr_idx[i]] += scaled_res[i] * tr_vals[i]
-        if init_params is not None:
-            grad += 2 * l2 * (params - init_params)
-        else:
-            grad += 2 * l2 * params
-
-        # Adam update with linear warmup + cosine decay
-        t_adam = epoch + 1
-        warmup_epochs = 20
-        if epoch < warmup_epochs:
-            cur_lr = lr * (epoch + 1) / warmup_epochs
-        else:
-            progress = (epoch - warmup_epochs) / max(epochs - warmup_epochs, 1)
-            cur_lr = lr * 0.5 * (1 + math.cos(math.pi * progress))
-
-        m = beta1 * m + (1 - beta1) * grad
-        v = beta2 * v + (1 - beta2) * grad ** 2
-        m_hat = m / (1 - beta1 ** t_adam)
-        v_hat = v / (1 - beta2 ** t_adam)
-        params -= cur_lr * m_hat / (np.sqrt(v_hat) + eps)
+                epoch_bar.write(
+                    f"  epoch {epoch:4d}: mse={mse_loss:.6f} R²={r2:.4f} acc={tr_acc:.3f}  ({elapsed:.1f}s)")
 
     # Final metrics
-    _, _, tr_acc = _evaluate(params, tr_idx, tr_vals, tr_targets, tr_weights, tr_wins)
+    _, _, tr_acc = _evaluate(params, tr_matrix, tr_targets, tr_weights, tr_wins)
     if has_val:
-        v_loss, v_r2, v_acc = _evaluate(params, val_idx, val_vals, val_targets,
+        v_loss, v_r2, v_acc = _evaluate(params, val_matrix, val_targets,
                                         val_weights, val_wins)
         print(f"\nFinal: train mse={mse_loss:.6f} R²={r2:.4f} acc={tr_acc:.3f}"
               f"  |  val mse={v_loss:.6f} R²={v_r2:.4f} acc={v_acc:.3f}")
@@ -318,38 +371,52 @@ def train(train_data, val_data, num_params, epochs=200, lr=0.01, l2=0.001,
 
 
 def save_results(params, output_dir):
-    """Save the trained lookup table."""
+    """Save the trained lookup table, always expanded to full no-piece-swap patterns.
+
+    If trained with piece-swap symmetry, expands by applying sign rules.
+    This way ai_tuned.py never needs to know about symmetry.
+    """
     os.makedirs(output_dir, exist_ok=True)
 
-    denorm_params = params
+    # Always expand to the full 377-pattern table (no piece-swap)
+    from learned_eval.pattern_table import build_arrays as _ba, _pattern_to_int
+    full_patterns, full_index, full_sign, full_ncanon, _ = _ba(WINDOW_LENGTH, enforce_piece_swap=False)
 
-    # Save as JSON: {pattern_string: value}
-    result = {"_meta": {"score_scale": SCORE_SCALE, "window_length": WINDOW_LENGTH}}
-    for i, pat in enumerate(CANON_PATTERNS):
+    expanded = np.zeros(full_ncanon, dtype=np.float64)
+    for i, pat in enumerate(full_patterns):
+        pi = _pattern_to_int(pat)
+        ci = CANON_INDEX[pi]
+        cs = CANON_SIGN[pi]
+        if cs != 0 and ci >= 0:
+            expanded[i] = cs * params[ci]
+
+    result = {"_meta": {"score_scale": SCORE_SCALE, "window_length": WINDOW_LENGTH,
+                        "piece_swap_symmetry": False}}
+    for i, pat in enumerate(full_patterns):
         pat_str = "".join(str(c) for c in pat)
-        result[pat_str] = float(denorm_params[i])
+        result[pat_str] = float(expanded[i])
 
     json_path = os.path.join(output_dir, "pattern_values.json")
     with open(json_path, "w") as f:
         json.dump(result, f, indent=2)
 
-    # Save as numpy array (denormalized)
+    # Save numpy array (expanded)
     npy_path = os.path.join(output_dir, "pattern_values.npy")
-    np.save(npy_path, denorm_params)
+    np.save(npy_path, expanded)
 
     # Print top patterns
-    sorted_idx = np.argsort(denorm_params)
+    sorted_idx = np.argsort(expanded)
     print(f"\nTop 20 most valuable patterns (for current player):")
     for i in sorted_idx[-20:][::-1]:
-        pat_str = "".join(str(c) for c in CANON_PATTERNS[i])
+        pat_str = "".join(str(c) for c in full_patterns[i])
         readable = pat_str.replace("0", ".").replace("1", "X").replace("2", "O")
-        print(f"  {readable:>8s}  {denorm_params[i]:+.3f}")
+        print(f"  {readable:>8s}  {expanded[i]:+.3f}")
 
     print(f"\nTop 20 worst patterns (for current player):")
     for i in sorted_idx[:20]:
-        pat_str = "".join(str(c) for c in CANON_PATTERNS[i])
+        pat_str = "".join(str(c) for c in full_patterns[i])
         readable = pat_str.replace("0", ".").replace("1", "X").replace("2", "O")
-        print(f"  {readable:>8s}  {denorm_params[i]:+.3f}")
+        print(f"  {readable:>8s}  {expanded[i]:+.3f}")
 
     print(f"\nSaved to {json_path} and {npy_path}")
     return json_path
@@ -364,9 +431,10 @@ def split_by_game(positions, val_fraction=0.2, seed=42):
     """
     rng = np.random.RandomState(seed)
 
-    # game_id is at index 3 for 4-tuple, index 4 for 5-tuple
-    gid_idx = 4 if len(positions[0]) == 5 else 3
-    has_game_ids = len(positions[0]) >= 4
+    # game_id index: 4-tuple=3, 5-tuple=4, 6-tuple=4, 7-tuple=4
+    tlen = len(positions[0])
+    gid_idx = 3 if tlen == 4 else 4
+    has_game_ids = tlen >= 4
     if has_game_ids:
         game_ids = sorted({entry[gid_idx] for entry in positions}, key=str)
         rng.shuffle(game_ids)
@@ -415,6 +483,8 @@ def main():
                         help="Keep every Nth position per game (by board size) to reduce correlation")
     parser.add_argument("--window-length", type=int, default=6, choices=[6, 7, 8],
                         help="Pattern window length (default 6)")
+    parser.add_argument("--no-piece-swap", action="store_true",
+                        help="Disable piece-swap symmetry (use 377 params instead of 195)")
     parser.add_argument("--reg-toward-init", action="store_true",
                         help="Regularize toward LINE_SCORES init instead of toward zero")
     parser.add_argument("--init-weights", type=str, default=None,
@@ -422,50 +492,95 @@ def main():
     parser.add_argument("--temporal-weight", type=float, default=0.0,
                         help="Weight positions by game progress: weight = (board_size/max_board_size)^alpha. "
                              "0 = disabled (default), try 1.0 or 2.0")
+    parser.add_argument("--batch-size", type=int, default=4096,
+                        help="Mini-batch size for training (default: 4096)")
+    parser.add_argument("--max-moves-from-human", type=int, default=0,
+                        help="Only keep positions within N moves of the human start (6/7-tuple only, 0=all)")
+    parser.add_argument("--max-games", type=int, default=0,
+                        help="Limit to positions from at most N games (0=all, deterministic selection)")
     args = parser.parse_args()
 
     # Initialize pattern tables for the requested window length
     global WINDOW_LENGTH, CANON_PATTERNS, CANON_INDEX, CANON_SIGN, NUM_CANON
     WINDOW_LENGTH = args.window_length
-    CANON_PATTERNS, CANON_INDEX, CANON_SIGN, NUM_CANON, _ = build_arrays(WINDOW_LENGTH)
-    print(f"Window length {WINDOW_LENGTH}: {NUM_CANON} canonical patterns")
+    enforce_ps = not args.no_piece_swap
+    CANON_PATTERNS, CANON_INDEX, CANON_SIGN, NUM_CANON, _ = build_arrays(WINDOW_LENGTH, enforce_piece_swap=enforce_ps)
+    sym_label = "with" if enforce_ps else "without"
+    print(f"Window length {WINDOW_LENGTH}: {NUM_CANON} canonical patterns ({sym_label} piece-swap symmetry)")
 
     with open(args.input, "rb") as f:
         positions = pickle.load(f)
     print(f"Loaded {len(positions)} positions from {args.input}")
 
-    # Determine target index
-    is_5tuple = len(positions[0]) == 5
-    if args.target == "win":
-        target_idx = 3 if is_5tuple else 2  # 4-tuple eval IS the game outcome
-        if not is_5tuple:
-            # 4-tuple win labels may be ±1000 instead of ±1; normalize them
+    # Determine target index based on tuple length
+    tlen = len(positions[0])
+    print(f"Data format: {tlen}-tuple")
+    if tlen == 4:
+        # (board, cp, eval_score, game_id)
+        is_extended = False
+        if args.target == "win":
+            target_idx = 2  # eval IS the game outcome for 4-tuple
             max_abs = max(abs(p[target_idx]) for p in positions)
             if max_abs > 1.5:
                 print(f"Normalizing 4-tuple win labels from ±{max_abs:.0f} to ±1")
                 positions = [
                     (p[0], p[1], p[2] / max_abs, p[3]) for p in positions
                 ]
+        else:
+            target_idx = 2
+    elif tlen == 5:
+        # (board, cp, eval_score, win_score, game_id)
+        is_extended = False
+        target_idx = 3 if args.target == "win" else 2
+    elif tlen in (6, 7):
+        # 6-tuple: (board, cp, moves_from_human, win_score, game_id, is_human_start)
+        # 7-tuple: (board, cp, moves_from_human, win_score, playout_id, human_game_id, is_human_start)
+        is_extended = True
+        if args.target == "win":
+            target_idx = 3  # win_score
+        else:
+            # No eval score in extended format; fall back to win
+            print("WARNING: No eval score in extended playout data, using win_score")
+            target_idx = 3
+    else:
+        raise ValueError(f"Unknown tuple length {tlen}")
+
+    if args.target == "win":
         print(f"Training on game outcomes (entry[{target_idx}])")
     else:
-        target_idx = 2
-        print(f"Training on search scores (entry[2])")
+        print(f"Training on search scores (entry[{target_idx}])")
 
-    # Filter out already-won positions (6-in-a-row on the board).
-    before = len(positions)
-    positions = [p for p in positions if not _board_has_win(p[0])]
-    if len(positions) < before:
-        print(f"Removed {before - len(positions)} already-won positions, {len(positions)} remaining")
-
-    # Filter out draws if requested
-    if args.no_draws and is_5tuple:
+    # Filter by moves_from_human (only for 6/7-tuple expanded playout data)
+    if args.max_moves_from_human > 0 and tlen in (6, 7):
         before = len(positions)
-        positions = [p for p in positions if p[3] != 0.0]
+        positions = [p for p in positions if p[2] <= args.max_moves_from_human]
+        print(f"Filtered moves_from_human <= {args.max_moves_from_human}: {before} -> {len(positions)} positions")
+
+    # Filter out draws if requested (win_score at target_idx for win target)
+    if args.no_draws and args.target == "win":
+        before = len(positions)
+        positions = [p for p in positions if p[target_idx] != 0.0]
         print(f"Removed {before - len(positions)} draw positions, {len(positions)} remaining")
+
+    # game_id index: 4-tuple=3, 5-tuple=4, 6-tuple=4, 7-tuple=4 (playout_id)
+    gid_idx = 3 if tlen == 4 else 4
+
+    # Limit to N games (deterministic selection)
+    if args.max_games > 0:
+        from collections import defaultdict as _dd
+        by_game = _dd(list)
+        for p in positions:
+            by_game[p[gid_idx]].append(p)
+        game_ids = sorted(by_game.keys(), key=str)
+        rng = __import__('random').Random(42)
+        rng.shuffle(game_ids)
+        keep_ids = set(game_ids[:args.max_games])
+        before = len(positions)
+        positions = [p for p in positions if p[gid_idx] in keep_ids]
+        print(f"Limited to {args.max_games} games: {before} -> {len(positions)} positions")
 
     # Subsample within each game to reduce correlation
     if args.subsample > 0:
-        gid_idx = 4 if is_5tuple else 3
         from collections import defaultdict
         by_game = defaultdict(list)
         for p in positions:
@@ -478,7 +593,12 @@ def main():
         print(f"Subsampled every {args.subsample}: {before} -> {len(positions)} positions")
 
     # win_score index for accuracy reporting
-    win_idx = 3 if is_5tuple else (2 if args.target == "win" else None)
+    if tlen in (5, 6, 7):
+        win_idx = 3
+    elif args.target == "win":
+        win_idx = 2  # 4-tuple: eval score IS win score
+    else:
+        win_idx = None
 
     train_pos, val_pos = split_by_game(positions, val_fraction=args.val_fraction)
 
@@ -494,10 +614,11 @@ def main():
     if args.init_weights:
         init_w = np.load(args.init_weights)
         print(f"Loaded init weights from {args.init_weights} ({len(init_w)} params)")
-    params = train(train_data, val_data, NUM_CANON,
+    num_params = NUM_CANON
+    params = train(train_data, val_data, num_params,
                    epochs=args.epochs, lr=args.lr, l2=args.l2,
                    reg_toward_init=args.reg_toward_init,
-                   init_weights=init_w)
+                   init_weights=init_w, batch_size=args.batch_size)
     save_results(params, args.output_dir)
 
 
