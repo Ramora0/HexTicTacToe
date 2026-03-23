@@ -18,7 +18,10 @@
       "Bash(wc:*)",
       "Bash(find /c/Users/Lee/coding/python/AI/HexTicTacToe/learned_eval/results* -name pattern_values.json)",
       "Bash(grep:*)",
-      "Bash(taskkill //F //IM python.exe)"
+      "Bash(taskkill //F //IM python.exe)",
+      "Bash(md5:*)",
+      "Bash(.venv/bin/python evaluate.py ai --pattern-b learned_eval/results_cycle1/pattern_values.json --no-tqdm -n 20)",
+      "Bash(.venv/bin/python -c \"\nimport pickle\nwith open\\('learned_eval/data/positions_human.pkl', 'rb'\\) as f:\n    data = pickle.load\\(f\\)\nprint\\(f'Count: {len\\(data\\)}'\\)\nprint\\(f'Tuple len: {len\\(data[0]\\)}'\\)\nprint\\(f'Sample: {data[0]}'\\)\n\")"
     ]
   }
 }

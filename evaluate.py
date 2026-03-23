@@ -43,9 +43,13 @@ def _load_positions(path, num_games, seed=42):
     with open(path, "rb") as f:
         data = pickle.load(f)
 
-    # Group by game uid
+    # Group by game uid (handle 4-tuple and 5-tuple formats)
     by_uid = defaultdict(list)
-    for board, player, _score, _label, uid in data:
+    for entry in data:
+        if len(entry) == 5:
+            board, player, _score, _label, uid = entry
+        else:
+            board, player, _score, uid = entry
         by_uid[uid].append((board, player))
 
     # Pick one position per game (middle of the game for interesting positions)
@@ -362,8 +366,12 @@ if __name__ == "__main__":
                         help="Pattern values JSON for bot A (forces ai_tuned)")
     parser.add_argument("--pattern-b", type=str, default=None,
                         help="Pattern values JSON for bot B (forces ai_tuned)")
-    parser.add_argument("--positions", type=str, default=None,
-                        help="Pickle file of seed positions (each played twice, both sides)")
+    default_positions = os.path.join(
+        os.path.dirname(__file__), "learned_eval", "data", "positions_human_labelled.pkl")
+    parser.add_argument("--positions", type=str, default=default_positions,
+                        help="Pickle file of seed positions (default: human game positions)")
+    parser.add_argument("--no-positions", action="store_true",
+                        help="Disable position seeding (start from empty board)")
     parsed = parser.parse_args()
 
     if parsed.pattern_a:
@@ -378,7 +386,7 @@ if __name__ == "__main__":
         b = load_bot(parsed.bot_b, time_limit=0.1)
 
     positions = None
-    if parsed.positions:
+    if not parsed.no_positions and parsed.positions:
         positions = _load_positions(parsed.positions, parsed.num_games)
 
     evaluate(a, b, num_games=parsed.num_games, use_tqdm=not parsed.no_tqdm,
