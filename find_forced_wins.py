@@ -17,6 +17,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import pickle
 import time
@@ -262,8 +263,8 @@ def _setup_game(board_dict, current_player):
 def _analyze_one(args):
     """Check one position for a forced-win setup via minimax + quiescence.
 
-    Skips instant wins and positions without near-threats. Extracts the
-    exact PV from the transposition table — setup, defense, and win.
+    Returns (pos_idx, result_dict_or_None) so we can always track which
+    positions have been processed, even when no win is found.
     """
     board_dict, current_player, game_uid, pos_idx, time_limit = args
 
@@ -273,35 +274,40 @@ def _analyze_one(args):
     filter_bot = MinimaxBot(time_limit=1.0)
     _init_bot(filter_bot, game)
     if _has_instant_win(filter_bot, game):
-        return None
+        return pos_idx, None
     if not _has_near_threats(filter_bot):
-        return None
+        return pos_idx, None
 
     # Full minimax search
     bot = MinimaxBot(time_limit=time_limit)
     bot.get_move(game)
 
     if abs(bot.last_score) < _WIN_SCORE:
-        return None
+        return pos_idx, None
 
     # Extract PV from TT
     pv = _extract_pv(bot, game)
 
     # Must be a multi-turn setup (not a 1-turn instant win)
     if len(pv) < 2:
-        return None
+        return pos_idx, None
 
     if bot.last_score > 0:
         winner = game.current_player
     else:
         winner = Player.B if game.current_player == Player.A else Player.A
 
-    return {
-        "board": board_dict,
-        "to_move": current_player,
-        "winner": winner,
-        "search_depth": bot.last_depth,
-        "sequence": pv,
+    def _p(player):
+        return "A" if player == Player.A else "B"
+
+    return pos_idx, {
+        "board": {f"{q},{r}": _p(p) for (q, r), p in board_dict.items()},
+        "to_move": _p(current_player),
+        "winner": _p(winner),
+        "sequence": [
+            {"player": _p(turn["player"]), "moves": turn["moves"]}
+            for turn in pv
+        ],
         "game_uid": game_uid,
         "num_stones": len(board_dict),
     }
@@ -331,7 +337,7 @@ def main():
     )
     parser.add_argument(
         "--output", type=str,
-        default=os.path.join(os.path.dirname(__file__), "data", "forced_wins.pkl"),
+        default=os.path.join(os.path.dirname(__file__), "data", "forced_wins.json"),
     )
     args = parser.parse_args()
 
@@ -342,31 +348,80 @@ def main():
     uids = set(uid for _, _, uid, _ in positions)
     print(f"  {len(positions)} positions from {len(uids)} games")
 
-    work = [(b, p, uid, idx, args.time_limit) for b, p, uid, idx in positions]
-    total = len(work)
+    # Resume support: checkpoint stores how many positions have been processed
+    checkpoint_path = args.output.rsplit(".", 1)[0] + ".checkpoint"
+    old_checkpoint = checkpoint_path + ".json"  # backwards compat
+    start_from = 0
+    results = []
+    if os.path.exists(old_checkpoint):
+        # Migrate old list-of-indices format
+        with open(old_checkpoint) as f:
+            start_from = max(json.load(f)) + 1
+        os.rename(old_checkpoint, old_checkpoint + ".bak")
+        with open(checkpoint_path, "w") as f:
+            f.write(str(start_from))
+        print(f"  Migrated old checkpoint, resuming from position {start_from}")
+    elif os.path.exists(checkpoint_path):
+        with open(checkpoint_path) as f:
+            start_from = int(f.read().strip())
+        print(f"  Resuming from position {start_from}")
+    if os.path.exists(args.output):
+        with open(args.output) as f:
+            results = json.load(f)
+        print(f"  Loaded {len(results)} prior wins")
+
+    work = [
+        (b, p, uid, idx, args.time_limit)
+        for b, p, uid, idx in positions[start_from:]
+    ]
+    total_all = len(positions)
+    total_new = len(work)
+    print(f"  {total_new} positions to scan")
 
     print(f"\nScanning ({args.time_limit}s minimax, {workers} workers)...")
     t0 = time.time()
 
-    results = []
+    os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+    save_every = 10
+    last_saved = len(results)
+    max_seq = max((len(r["sequence"]) for r in results), default=0)
+    processed = start_from
     from tqdm import tqdm
     with Pool(workers) as pool:
         bar = tqdm(
-            pool.imap_unordered(_analyze_one, work, chunksize=64),
-            total=total, desc="Positions", unit="pos",
+            pool.imap(_analyze_one, work, chunksize=8),
+            total=total_new, desc="Positions", unit="pos",
         )
-        for result in bar:
+        for pos_idx, result in bar:
+            processed = pos_idx + 1
             if result is not None:
                 results.append(result)
-            bar.set_postfix(wins=len(results))
+                seq_len = len(result["sequence"])
+                if seq_len > max_seq:
+                    max_seq = seq_len
+            # Save periodically
+            if len(results) - last_saved >= save_every or bar.n % 1000 == 0:
+                with open(args.output, "w") as f:
+                    json.dump(results, f)
+                with open(checkpoint_path, "w") as f:
+                    f.write(str(processed))
+                last_saved = len(results)
+            if processed > 0:
+                win_rate = len(results) / processed
+                est = int(win_rate * total_all)
+                bar.set_postfix(wins=len(results), est=est, longest=max_seq)
+
+    # Final checkpoint
+    with open(checkpoint_path, "w") as f:
+        f.write(str(processed))
 
     elapsed = time.time() - t0
 
-    # Deduplicate by board state
+    # Deduplicate by board state (prefer longer sequences)
     seen_boards = set()
     unique = []
     for r in sorted(results, key=lambda r: len(r["sequence"]), reverse=True):
-        board_key = frozenset(r["board"].items())
+        board_key = frozenset(sorted(r["board"].items()))
         if board_key not in seen_boards:
             seen_boards.add(board_key)
             unique.append(r)
@@ -374,9 +429,13 @@ def main():
     # Sort: fewer stones first (harder puzzles), then longer sequences
     unique.sort(key=lambda r: (r["num_stones"], -len(r["sequence"])))
 
+    # Final save (deduplicated + sorted)
+    with open(args.output, "w") as f:
+        json.dump(unique, f, indent=2)
+
     # Stats
-    a_wins = sum(1 for r in unique if r["winner"] == Player.A)
-    b_wins = sum(1 for r in unique if r["winner"] == Player.B)
+    a_wins = sum(1 for r in unique if r.get("winner") == "A")
+    b_wins = sum(1 for r in unique if r.get("winner") == "B")
     attacker = sum(1 for r in unique if r["winner"] == r["to_move"])
     defender = len(unique) - attacker
     seq_lens = [len(r["sequence"]) for r in unique]
@@ -405,10 +464,6 @@ def main():
         for k in sorted(dist):
             print(f"    {k} turns: {dist[k]}")
 
-    # Save
-    os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
-    with open(args.output, "wb") as f:
-        pickle.dump(unique, f)
     print(f"\n  Saved {len(unique)} puzzles to {args.output}")
     print(f"{'='*55}")
 
