@@ -24,6 +24,7 @@ PLAYER_A_COLOR = (220, 62, 62)
 PLAYER_B_COLOR = (62, 120, 220)
 PLAYER_A_HOVER = (120, 40, 40)
 WIN_BORDER = (255, 215, 0)
+AI_LAST_MOVE = (255, 255, 255)
 TEXT_COLOR = (220, 220, 230)
 SUBTLE_TEXT = (130, 130, 150)
 
@@ -126,11 +127,14 @@ def compute_view(visible_cells):
     return size, ox, oy
 
 
-def draw_board(screen, game, visible_cells, hover_hex, hex_size, ox, oy, fonts, ai_stats=None):
+def draw_board(screen, game, visible_cells, hover_hex, hex_size, ox, oy, fonts,
+               human_player=Player.A, ai_stats=None, last_ai_moves=()):
     font_big, font_med, font_sm = fonts
     screen.fill(BG_COLOR)
 
     board = game.board
+    human_color = PLAYER_A_COLOR if human_player == Player.A else PLAYER_B_COLOR
+    ai_color = PLAYER_B_COLOR if human_player == Player.A else PLAYER_A_COLOR
 
     # Hex cells
     for (q, r) in visible_cells:
@@ -150,7 +154,13 @@ def draw_board(screen, game, visible_cells, hover_hex, hex_size, ox, oy, fonts, 
         pygame.draw.polygon(screen, fill, corners)
         pygame.draw.polygon(screen, GRID_LINE, corners, 2)
 
-    # Winning cells highlight
+    # AI last move highlight
+    for (q, r) in last_ai_moves:
+        cx, cy = hex_to_pixel(q, r, hex_size, ox, oy)
+        corners = hex_corners(cx, cy, hex_size)
+        pygame.draw.polygon(screen, AI_LAST_MOVE, corners, 3)
+
+    # Winning cells highlight (drawn on top)
     for (q, r) in game.winning_cells:
         cx, cy = hex_to_pixel(q, r, hex_size, ox, oy)
         corners = hex_corners(cx, cy, hex_size)
@@ -158,30 +168,32 @@ def draw_board(screen, game, visible_cells, hover_hex, hex_size, ox, oy, fonts, 
 
     # Status text
     if game.winner != Player.NONE:
-        name = "You win!" if game.winner == Player.A else "AI wins!"
-        color = PLAYER_A_COLOR if game.winner == Player.A else PLAYER_B_COLOR
+        name = "You win!" if game.winner == human_player else "AI wins!"
+        color = human_color if game.winner == human_player else ai_color
         status = font_big.render(name, True, color)
     elif game.game_over:
         status = font_big.render("Draw!", True, TEXT_COLOR)
-    elif game.current_player == Player.B:
-        status = font_big.render("AI is thinking...", True, PLAYER_B_COLOR)
+    elif game.current_player != human_player:
+        status = font_big.render("AI is thinking...", True, ai_color)
     else:
-        status = font_big.render("Your turn", True, PLAYER_A_COLOR)
+        status = font_big.render("Your turn", True, human_color)
 
     screen.blit(status, status.get_rect(centerx=WINDOW_WIDTH // 2, y=20))
 
-    if not game.game_over and game.current_player == Player.A:
+    if not game.game_over and game.current_player == human_player:
         moves_surf = font_med.render(
             f"Moves left: {game.moves_left_in_turn}", True, SUBTLE_TEXT
         )
         screen.blit(moves_surf, moves_surf.get_rect(centerx=WINDOW_WIDTH // 2, y=55))
 
     if ai_stats:
-        depth, nodes = ai_stats
-        ai_info = font_sm.render(f"AI: depth {depth}, {nodes:,} nodes", True, SUBTLE_TEXT)
+        depth, nodes, score = ai_stats
+        ai_info = font_sm.render(f"AI: depth {depth}, {nodes:,} nodes, eval {score:+,}",
+                                 True, SUBTLE_TEXT)
         screen.blit(ai_info, ai_info.get_rect(centerx=WINDOW_WIDTH // 2, y=WINDOW_HEIGHT - 50))
 
-    instr = font_sm.render("Click to place  |  R = restart  |  Q = quit", True, SUBTLE_TEXT)
+    instr = font_sm.render("Click to place  |  SPACE = swap sides  |  R = restart  |  Q = quit",
+                           True, SUBTLE_TEXT)
     screen.blit(instr, instr.get_rect(centerx=WINDOW_WIDTH // 2, y=WINDOW_HEIGHT - 30))
 
     pygame.display.flip()
@@ -202,9 +214,11 @@ def main():
     game = HexGame(win_length=6)
     ai = MinimaxBot(time_limit=0.5)
 
+    human_player = Player.A
     hover_hex = None
     last_ai_time = 0
     ai_stats = None
+    last_ai_moves = ()
 
     while True:
         now = pygame.time.get_ticks()
@@ -218,7 +232,7 @@ def main():
                 sys.exit()
 
             elif event.type == pygame.MOUSEMOTION:
-                if game.current_player == Player.A and not game.game_over:
+                if game.current_player == human_player and not game.game_over:
                     q, r = pixel_to_hex(*event.pos, hex_size, ox, oy)
                     if (q, r) in visible_cells and game.is_valid_move(q, r):
                         hover_hex = (q, r)
@@ -226,54 +240,46 @@ def main():
                         hover_hex = None
 
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                if game.current_player == Player.A and not game.game_over:
+                if game.current_player == human_player and not game.game_over:
                     q, r = pixel_to_hex(*event.pos, hex_size, ox, oy)
                     if (q, r) in visible_cells and game.make_move(q, r):
                         hover_hex = None
-                        last_ai_time = now  # start AI delay timer
+                        last_ai_time = now
 
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_r:
                     game.reset()
+                    human_player = Player.A
                     hover_hex = None
                     ai_stats = None
+                    last_ai_moves = ()
                 elif event.key == pygame.K_q:
                     pygame.quit()
                     sys.exit()
                 elif event.key == pygame.K_SPACE and not game.game_over:
-                    if not game.board:
-                        # First move: place at center, skip AI entirely
-                        game.make_move(0, 0)
-                    elif game.current_player == Player.A:
-                        # AI plays the human's remaining moves
-                        draw_board(screen, game, visible_cells, None, hex_size, ox, oy, fonts, ai_stats)
-                        result = ai.get_move(game)
-                        if ai.pair_moves:
-                            for q, r in result:
-                                if not game.game_over:
-                                    game.make_move(q, r)
-                        else:
-                            game.make_move(*result)
-                        ai_stats = (ai.last_depth, ai._nodes)
-                        last_ai_time = pygame.time.get_ticks()
+                    # Swap sides
+                    human_player = Player.B if human_player == Player.A else Player.A
+                    last_ai_time = now
                     hover_hex = None
 
-        # AI turn — one move per delay tick
-        if (game.current_player == Player.B and not game.game_over
+        # AI turn
+        if (game.current_player != human_player and not game.game_over
                 and now - last_ai_time >= AI_MOVE_DELAY):
-            # Draw "thinking" frame before computing
-            draw_board(screen, game, visible_cells, None, hex_size, ox, oy, fonts, ai_stats)
+            draw_board(screen, game, visible_cells, None, hex_size, ox, oy, fonts,
+                       human_player, ai_stats, last_ai_moves)
             result = ai.get_move(game)
+            last_ai_moves = tuple(tuple(m) for m in result) if ai.pair_moves else (tuple(result),)
             if ai.pair_moves:
                 for q, r in result:
                     if not game.game_over:
                         game.make_move(q, r)
             else:
                 game.make_move(*result)
-            ai_stats = (ai.last_depth, ai._nodes)
+            ai_stats = (ai.last_depth, ai._nodes, ai.last_score)
             last_ai_time = pygame.time.get_ticks()
 
-        draw_board(screen, game, visible_cells, hover_hex, hex_size, ox, oy, fonts, ai_stats)
+        draw_board(screen, game, visible_cells, hover_hex, hex_size, ox, oy, fonts,
+                   human_player, ai_stats, last_ai_moves)
         clock.tick(60)
 
 
