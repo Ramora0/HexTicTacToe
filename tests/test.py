@@ -10,6 +10,8 @@ This reveals how much work alpha-beta is actually saving.
 
 import os
 import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
 import math
 import time
 import numpy as np

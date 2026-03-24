@@ -1,4 +1,8 @@
 """Find the pruning sweet spot: what MAX_WIDTH consistently reaches the next depth?"""
+import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
 import ai
 from game import HexGame, Player
 

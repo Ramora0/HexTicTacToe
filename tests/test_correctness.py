@@ -5,8 +5,11 @@ Uses a very short time limit so both bots reach the same search depth,
 then compares their chosen moves across random positions.
 """
 
+import os
 import random
 import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
 from game import HexGame, Player
 
 import ai_cpp

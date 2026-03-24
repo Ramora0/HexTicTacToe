@@ -29,7 +29,25 @@
       "Bash(curl -sI \"https://raw.githubusercontent.com/martinus/unordered_dense/main/include/ankerl/stl.h\")",
       "Bash(curl -sL \"https://raw.githubusercontent.com/martinus/unordered_dense/main/include/ankerl/stl.h\" -o /Users/leedavis/coding/python/ai/HexTicTacToe/stl.h)",
       "Bash(git commit:*)",
-      "Bash(source /Users/leedavis/coding/python/ai/HexTicTacToe/.venv/bin/activate)"
+      "Bash(source /Users/leedavis/coding/python/ai/HexTicTacToe/.venv/bin/activate)",
+      "Bash(.venv/bin/python3 -c \"import numpy as np; a = np.load\\('learned_eval/results_cycle1/pattern_values.npy'\\); print\\(a.dtype, a.shape, a[:5]\\)\")",
+      "Bash(.venv/bin/python3 -c \"\nfrom ai import _load_pattern_values, _DEFAULT_PATTERN_PATH\npv, el = _load_pattern_values\\(_DEFAULT_PATTERN_PATH\\)\nprint\\('eval_length:', el, 'pv size:', len\\(pv\\), 'sample:', pv[:5]\\)\n\")",
+      "Bash(git rm:*)",
+      "Bash(.venv/bin/python setup.py build_ext --inplace)",
+      "Bash(.venv/bin/python test_profile.py --moves 12 --time-limit 0.5 2>&1)",
+      "Bash(curl -s \"https://en.wikipedia.org/wiki/Cheating_in_chess\")",
+      "Bash(.venv/bin/python tests/test_profile.py --moves 12 --time-limit 0.5 2>&1)",
+      "WebSearch",
+      "WebFetch(domain:buildingjerry.wordpress.com)",
+      "WebFetch(domain:www.techscience.com)",
+      "WebFetch(domain:arxiv.org)",
+      "WebFetch(domain:incoherency.co.uk)",
+      "WebFetch(domain:www.chess.com)",
+      "WebFetch(domain:ceur-ws.org)",
+      "WebFetch(domain:chesschest.com)",
+      "WebFetch(domain:www.cs.toronto.edu)",
+      "WebFetch(domain:link.springer.com)",
+      "Bash(.venv/bin/python -c \"\nimport ai_cpp\nbot = ai_cpp.MinimaxBot\\(time_limit=0.1\\)\nprint\\(f'ai_cpp loaded: pair_moves={bot.pair_moves}, time_limit={bot.time_limit}'\\)\n\nfrom game import HexGame\ngame = HexGame\\(\\)\nmove = bot.get_move\\(game\\)\nprint\\(f'Empty board move: {move}'\\)\n\ngame.make_move\\(0, 0\\)\ngame.make_move\\(1, 0\\)\ngame.make_move\\(0, 1\\)\nmove = bot.get_move\\(game\\)\nprint\\(f'Move with stones: {move}, depth={bot.last_depth}, nodes={bot._nodes}'\\)\nprint\\('ai_cpp OK'\\)\n\")"
     ]
   }
 }

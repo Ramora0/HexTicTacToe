@@ -134,6 +134,20 @@ def compute_view(visible_cells):
 EDIT_MODE_COLOR = (255, 180, 40)
 
 
+def rebuild_game(move_list):
+    """Replay a list of (q, r) moves and return (game, move_numbers, turn_number)."""
+    game = HexGame(win_length=6)
+    move_numbers = {}
+    turn_number = 0
+    for q, r in move_list:
+        new_turn = game.moves_left_in_turn == 2 or game.move_count == 0
+        if new_turn:
+            turn_number += 1
+        game.make_move(q, r)
+        move_numbers[(q, r)] = turn_number
+    return game, move_numbers, turn_number
+
+
 def draw_board(screen, game, visible_cells, hover_hex, hex_size, ox, oy, fonts,
                human_player=Player.A, ai_stats=None, last_ai_moves=(),
                edit_mode=False, edit_hover_btn=None,
@@ -237,7 +251,7 @@ def draw_board(screen, game, visible_cells, hover_hex, hex_size, ox, oy, fonts,
         instr = font_sm.render("E = exit edit  |  S = save  |  R = restart  |  Q = quit", True, SUBTLE_TEXT)
     else:
         instr = font_sm.render(
-            "SPACE = swap  |  A = autoplay  |  N = numbers  |  S = save  |  E = edit  |  R = restart  |  Q = quit",
+            "\u2190\u2192 = undo/redo  |  SPACE = swap  |  A = autoplay  |  N = numbers  |  S = save  |  E = edit  |  R = restart  |  Q = quit",
             True, SUBTLE_TEXT,
         )
     screen.blit(instr, instr.get_rect(centerx=WINDOW_WIDTH // 2, y=WINDOW_HEIGHT - 30))
@@ -286,6 +300,8 @@ def main():
     save_msg = None
     save_msg_time = 0
     autoplay = False
+    move_history = []   # ordered list of (q, r) moves played
+    history_pos = 0     # how many moves from move_history are applied
 
     while True:
         now = pygame.time.get_ticks()
@@ -335,6 +351,10 @@ def main():
                         if (q, r) in visible_cells and game.is_valid_move(q, r):
                             new_turn = game.moves_left_in_turn == 2 or game.move_count == 0
                             if game.make_move(q, r):
+                                # Truncate any redo history and append
+                                move_history = move_history[:history_pos]
+                                move_history.append((q, r))
+                                history_pos = len(move_history)
                                 if new_turn:
                                     turn_number += 1
                                 move_numbers[(q, r)] = turn_number
@@ -358,23 +378,52 @@ def main():
                         last_ai_moves = ()
                         move_numbers = {}
                         turn_number = 0
+                        move_history = []
+                        history_pos = 0
                     hover_hex = None
                 elif event.key == pygame.K_n:
                     show_numbers = not show_numbers
                 elif event.key == pygame.K_s:
-                    # Save current position to pickle file
-                    save_path = os.path.join(os.path.dirname(__file__), "saved_positions.pkl")
-                    positions = []
-                    if os.path.exists(save_path):
-                        with open(save_path, "rb") as f:
-                            positions = pickle.load(f)
-                    uid = f"play_{int(time.time())}_{len(positions)}"
+                    # Save current position to individual pickle file
+                    pos_dir = os.path.join(os.path.dirname(__file__), "positions")
+                    os.makedirs(pos_dir, exist_ok=True)
+                    timestamp = time.strftime("%Y%m%d_%H%M%S")
                     save_player = Player.A if edit_mode else game.current_player
-                    positions.append((dict(game.board), save_player, 0, uid))
+                    filename = f"position_{timestamp}.pkl"
+                    save_path = os.path.join(pos_dir, filename)
+                    # Avoid overwriting if saved multiple times in same second
+                    counter = 1
+                    while os.path.exists(save_path):
+                        filename = f"position_{timestamp}_{counter}.pkl"
+                        save_path = os.path.join(pos_dir, filename)
+                        counter += 1
+                    position = {
+                        "board": dict(game.board),
+                        "current_player": save_player,
+                        "move_count": len(game.board),
+                    }
                     with open(save_path, "wb") as f:
-                        pickle.dump(positions, f)
-                    save_msg = f"Position saved ({len(positions)} total)"
+                        pickle.dump(position, f)
+                    save_msg = f"Saved {filename}"
                     save_msg_time = now
+                elif event.key == pygame.K_LEFT and not edit_mode:
+                    if history_pos > 0:
+                        history_pos -= 1
+                        game, move_numbers, turn_number = rebuild_game(
+                            move_history[:history_pos])
+                        ai_stats = None
+                        last_ai_moves = ()
+                        hover_hex = None
+                        autoplay = False
+                elif event.key == pygame.K_RIGHT and not edit_mode:
+                    if history_pos < len(move_history):
+                        history_pos += 1
+                        game, move_numbers, turn_number = rebuild_game(
+                            move_history[:history_pos])
+                        ai_stats = None
+                        last_ai_moves = ()
+                        hover_hex = None
+                        autoplay = False
                 elif event.key == pygame.K_r:
                     game.reset()
                     human_player = Player.A
@@ -384,6 +433,8 @@ def main():
                     edit_mode = False
                     move_numbers = {}
                     turn_number = 0
+                    move_history = []
+                    history_pos = 0
                     autoplay = False
                 elif event.key == pygame.K_q:
                     pygame.quit()
@@ -413,9 +464,15 @@ def main():
                     if not game.game_over:
                         game.make_move(q, r)
                         move_numbers[(q, r)] = turn_number
+                        move_history = move_history[:history_pos]
+                        move_history.append((q, r))
+                        history_pos = len(move_history)
             else:
                 game.make_move(*result)
                 move_numbers[tuple(result)] = turn_number
+                move_history = move_history[:history_pos]
+                move_history.append(tuple(result))
+                history_pos = len(move_history)
             ai_stats = (ai.last_depth, ai._nodes, ai.last_score)
             last_ai_time = pygame.time.get_ticks()
 

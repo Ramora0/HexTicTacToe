@@ -9,6 +9,10 @@ Usage:
     python test_profile.py [--moves N] [--time-limit T]
 """
 
+import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
 import time
 import argparse
 from game import HexGame
