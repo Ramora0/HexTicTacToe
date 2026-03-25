@@ -64,7 +64,7 @@ emscripten::val getMove(emscripten::val movesA, emscripten::val movesB,
     gs.moves_left = 2;
     gs.move_count = static_cast<int>(gs.cells.size());
 
-    g_bot.time_limit = timeLimit;
+    g_bot.time_limit = timeLimit / 1000.0;
     auto mr = g_bot.get_move(gs);
 
     auto result = emscripten::val::array();

@@ -5,3 +5,5 @@ build/
 *.pkl
 *.png
 .venv/
+cpp/hex_engine.js
+cpp/hex_engine.wasm
