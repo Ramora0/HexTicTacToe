@@ -1,11 +1,8 @@
 /*
- * engine.h -- Pure C++ minimax engine (flat-array variant, namespace opt).
+ * engine_rank.h -- Instrumented copy of engine.h for rank-pair analysis.
  *
- * No pybind11, no Emscripten -- just the search engine.
- * Include from a thin platform wrapper (pybind11, Embind, etc.).
- *
- * Board and window data stored in fixed 140x140 flat arrays for
- * cache-friendly O(1) access.  TT and history remain as hash maps.
+ * Tracks which ranked move combinations are generated, searched,
+ * and chosen at each search depth (namespace rank).
  */
 #pragma once
 
@@ -35,6 +32,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <map>
 #include <random>
 
 // ── Alias flat hash containers (still used for TT + history) ──
@@ -239,7 +237,7 @@ static void ensure_tables() {
 // ═══════════════════════════════════════════════════════════════════════
 //  MinimaxBot  (namespace opt -- flat-array variant)
 // ═══════════════════════════════════════════════════════════════════════
-namespace opt {
+namespace rank {
 
 class MinimaxBot {
 public:
@@ -251,6 +249,28 @@ public:
     double last_score  = 0;
     double last_ebf    = 0;
     int    max_depth   = 200;
+
+    // ── Rank tracking ──
+    bool track_ranks = false;
+
+    struct RankTracker {
+        static constexpr size_t SCATTER_CAP = 200000;  // max points per depth label
+
+        // category -> depth_label -> (lo, hi) -> count
+        std::map<std::string, std::map<std::string, std::map<std::pair<int,int>, int64_t>>> data;
+        // depth_label -> vector of (val1, val2, node_cost, was_chosen)
+        std::map<std::string, std::vector<std::tuple<double, double, int64_t, bool>>> scatter;
+
+        void record(const std::string& cat, const std::string& label, int lo, int hi, int64_t weight = 1) {
+            data[cat][label][{std::min(lo, hi), std::max(lo, hi)}] += weight;
+        }
+        void scatter_point(const std::string& label, double v1, double v2, int64_t nodes, bool chosen) {
+            auto& vec = scatter[label];
+            if (chosen || vec.size() < SCATTER_CAP)
+                vec.emplace_back(std::min(v1, v2), std::max(v1, v2), nodes, chosen);
+        }
+        void clear() { data.clear(); scatter.clear(); }
+    } rank_tracker;
 
     // ── Constructors ──
     MinimaxBot() : time_limit(0.05), _rng(std::random_device{}()) { ensure_tables(); }
@@ -321,7 +341,7 @@ public:
 
         // ── Deadline ──
         _deadline = Clock::now() + std::chrono::microseconds(
-                        static_cast<int64_t>(time_limit * 1000000.0));
+                        static_cast<int64_t>(time_limit * 2000000.0));
 
         // ── Player tracking / TT management ──
         if (_cur_player != _player) {
@@ -530,6 +550,11 @@ private:
 
     // ── RNG ──
     std::mt19937 _rng;
+
+    // ── Rank tracking state ──
+    int _root_search_depth = 0;
+    flat_map<Coord, int>    _root_rank_map;
+    flat_map<Coord, double> _root_score_map;
 
     // ── Saved state for TimeUp rollback ──
     struct SavedArrays {
@@ -849,13 +874,15 @@ private:
             }
             if (ok) out.push_back(t);
         }
-        return out.empty() ? turns : out;
+        return out;
     }
 
     // ────────────────────────────────────────────────────────────────
     //  Turn generation
     // ────────────────────────────────────────────────────────────────
     std::vector<Turn> _generate_turns() {
+        if (track_ranks) { _root_rank_map.clear(); _root_score_map.clear(); }
+
         auto [found, wt] = _find_instant_win(_cur_player);
         if (found) return {wt};
 
@@ -882,6 +909,12 @@ private:
         int cap = std::min(static_cast<int>(scored.size()), ROOT_CANDIDATE_CAP);
         for (int i = 0; i < cap; i++)
             cands.push_back(scored[i].second);
+
+        if (track_ranks)
+            for (int i = 0; i < cap; i++) {
+                _root_rank_map[cands[i]] = i;
+                _root_score_map[cands[i]] = scored[i].first;
+            }
 
         // Colony candidate
         if (!_board_cells.empty()) {
@@ -1040,6 +1073,7 @@ private:
     // ────────────────────────────────────────────────────────────────
     std::pair<Turn, flat_map<Turn, double, TurnHash>>
     _search_root(std::vector<Turn>& turns, int depth) {
+        _root_search_depth = depth;
         bool maximizing = (_cur_player == _player);
         Turn best = turns[0];
         double alpha = -INF_SCORE, beta = INF_SCORE;
@@ -1049,6 +1083,7 @@ private:
 
         for (const auto& turn : turns) {
             _check_time();
+            int nodes_before = _nodes;
             UndoStep steps[2];
             int n = _make_turn(turn, steps);
             double sc;
@@ -1059,8 +1094,35 @@ private:
             _undo_turn(steps, n);
             scores[turn] = sc;
 
+            // Record node cost per turn at root
+            if (track_ranks && !_root_rank_map.empty()) {
+                int64_t cost = _nodes - nodes_before;
+                auto it1 = _root_rank_map.find(turn.first);
+                auto it2 = _root_rank_map.find(turn.second);
+                if (it1 != _root_rank_map.end() && it2 != _root_rank_map.end()) {
+                    rank_tracker.record("generated", "root", it1->second, it2->second);
+                    rank_tracker.record("nodes", "root", it1->second, it2->second, cost);
+                }
+                auto s1 = _root_score_map.find(turn.first);
+                auto s2 = _root_score_map.find(turn.second);
+                if (s1 != _root_score_map.end() && s2 != _root_score_map.end())
+                    rank_tracker.scatter_point("root", s1->second, s2->second, cost, false);
+            }
+
             if (maximizing && sc > alpha)  { alpha = sc; best = turn; }
             if (!maximizing && sc < beta)  { beta  = sc; best = turn; }
+        }
+
+        // Record chosen at root
+        if (track_ranks && !_root_rank_map.empty()) {
+            auto it1 = _root_rank_map.find(best.first);
+            auto it2 = _root_rank_map.find(best.second);
+            if (it1 != _root_rank_map.end() && it2 != _root_rank_map.end())
+                rank_tracker.record("chosen", "root", it1->second, it2->second);
+            auto s1 = _root_score_map.find(best.first);
+            auto s2 = _root_score_map.find(best.second);
+            if (s1 != _root_score_map.end() && s2 != _root_score_map.end())
+                rank_tracker.scatter_point("root", s1->second, s2->second, 0, true);
         }
 
         double best_sc = maximizing ? alpha : beta;
@@ -1166,6 +1228,9 @@ private:
         bool maximizing = (_cur_player == _player);
 
         // Generate candidates and turns
+        flat_map<Coord, int>    rank_map;
+        flat_map<Coord, double> score_map;
+        std::string rank_label;
         std::vector<Turn> turns;
         {
             std::vector<Coord> cands(_cand_set.begin(), _cand_set.end());
@@ -1198,12 +1263,30 @@ private:
                 int cap = std::min(static_cast<int>(scored.size()), CANDIDATE_CAP);
                 for (int i = 0; i < cap; i++) cands.push_back(scored[i].second);
 
+                if (track_ranks) {
+                    rank_label = "d" + std::to_string(_root_search_depth - depth);
+                    for (int i = 0; i < cap; i++) {
+                        rank_map[cands[i]] = i;
+                        score_map[cands[i]] = scored[i].first;
+                    }
+                }
+
                 int n = static_cast<int>(cands.size());
                 turns.reserve(n * (n - 1) / 2);
                 for (int i = 0; i < n; i++)
                     for (int j = i + 1; j < n; j++)
                         turns.push_back({cands[i], cands[j]});
                 turns = _filter_turns_by_threats(turns);
+            }
+        }
+
+        // Record generated rank pairs
+        if (track_ranks && !rank_map.empty()) {
+            for (const auto& turn : turns) {
+                auto it1 = rank_map.find(turn.first);
+                auto it2 = rank_map.find(turn.second);
+                if (it1 != rank_map.end() && it2 != rank_map.end())
+                    rank_tracker.record("generated", rank_label, it1->second, it2->second);
             }
         }
 
@@ -1225,12 +1308,25 @@ private:
         if (maximizing) {
             value = -INF_SCORE;
             for (const auto& turn : turns) {
+                int nodes_before = _nodes;
                 UndoStep steps[2];
                 int n = _make_turn(turn, steps);
                 double cv = _game_over
                     ? ((_winner == _player) ? WIN_SCORE : -WIN_SCORE)
                     : _minimax(depth - 1, alpha, beta);
                 _undo_turn(steps, n);
+                if (track_ranks && !rank_map.empty()) {
+                    int64_t cost = _nodes - nodes_before;
+                    auto it1 = rank_map.find(turn.first);
+                    auto it2 = rank_map.find(turn.second);
+                    if (it1 != rank_map.end() && it2 != rank_map.end())
+                        rank_tracker.record("nodes", rank_label,
+                                            it1->second, it2->second, cost);
+                    auto s1 = score_map.find(turn.first);
+                    auto s2 = score_map.find(turn.second);
+                    if (s1 != score_map.end() && s2 != score_map.end())
+                        rank_tracker.scatter_point(rank_label, s1->second, s2->second, cost, false);
+                }
                 if (cv > value) { value = cv; best_move = turn; }
                 alpha = std::max(alpha, value);
                 if (alpha >= beta) {
@@ -1242,12 +1338,25 @@ private:
         } else {
             value = INF_SCORE;
             for (const auto& turn : turns) {
+                int nodes_before = _nodes;
                 UndoStep steps[2];
                 int n = _make_turn(turn, steps);
                 double cv = _game_over
                     ? ((_winner == _player) ? WIN_SCORE : -WIN_SCORE)
                     : _minimax(depth - 1, alpha, beta);
                 _undo_turn(steps, n);
+                if (track_ranks && !rank_map.empty()) {
+                    int64_t cost = _nodes - nodes_before;
+                    auto it1 = rank_map.find(turn.first);
+                    auto it2 = rank_map.find(turn.second);
+                    if (it1 != rank_map.end() && it2 != rank_map.end())
+                        rank_tracker.record("nodes", rank_label,
+                                            it1->second, it2->second, cost);
+                    auto s1 = score_map.find(turn.first);
+                    auto s2 = score_map.find(turn.second);
+                    if (s1 != score_map.end() && s2 != score_map.end())
+                        rank_tracker.scatter_point(rank_label, s1->second, s2->second, cost, false);
+                }
                 if (cv < value) { value = cv; best_move = turn; }
                 beta = std::min(beta, value);
                 if (alpha >= beta) {
@@ -1256,6 +1365,18 @@ private:
                     break;
                 }
             }
+        }
+
+        // Record chosen rank pair + scatter
+        if (track_ranks && !rank_map.empty()) {
+            auto it1 = rank_map.find(best_move.first);
+            auto it2 = rank_map.find(best_move.second);
+            if (it1 != rank_map.end() && it2 != rank_map.end())
+                rank_tracker.record("chosen", rank_label, it1->second, it2->second);
+            auto s1 = score_map.find(best_move.first);
+            auto s2 = score_map.find(best_move.second);
+            if (s1 != score_map.end() && s2 != score_map.end())
+                rank_tracker.scatter_point(rank_label, s1->second, s2->second, 0, true);
         }
 
         int8_t flag;
@@ -1267,4 +1388,4 @@ private:
     }
 };
 
-} // namespace opt
+} // namespace rank

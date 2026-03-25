@@ -1,8 +1,10 @@
 /*
- * engine_og.h -- Pure C++ minimax engine (hash-map variant, namespace og).
+ * engine_og.h -- Pure C++ minimax engine (flat-array variant, namespace og).
  *
  * No pybind11, no Emscripten -- just the search engine.
- * Uses ankerl::unordered_dense flat hash maps for all board data.
+ *
+ * Board and window data stored in fixed 140x140 flat arrays for
+ * cache-friendly O(1) access.  TT and history remain as hash maps.
  */
 #pragma once
 
@@ -34,7 +36,7 @@
 #include <cmath>
 #include <random>
 
-// ── Alias flat hash containers ──
+// ── Alias flat hash containers (still used for TT + history) ──
 template <typename K, typename V, typename H = ankerl::unordered_dense::hash<K>>
 using og_flat_map = ankerl::unordered_dense::map<K, V, H>;
 
@@ -42,16 +44,21 @@ template <typename K, typename H = ankerl::unordered_dense::hash<K>>
 using og_flat_set = ankerl::unordered_dense::set<K, H>;
 
 // ═══════════════════════════════════════════════════════════════════════
-//  Constants  (mirror ai.py hyperparameters exactly)
+//  Constants
 // ═══════════════════════════════════════════════════════════════════════
-static constexpr int    OG_CANDIDATE_CAP      = 11;
+static constexpr int    OG_CANDIDATE_CAP      = 15;
 static constexpr int    OG_ROOT_CANDIDATE_CAP = 13;
 static constexpr int    OG_NEIGHBOR_DIST      = 2;
-static constexpr double OG_DELTA_WEIGHT       = 1.5;
+static constexpr double OG_DELTA_WEIGHT       = 15;
 static constexpr int    OG_MAX_QDEPTH         = 16;
 static constexpr int    OG_WIN_LENGTH         = 6;
 static constexpr double OG_WIN_SCORE          = 100000000.0;
 static constexpr double OG_INF_SCORE          = std::numeric_limits<double>::infinity();
+
+// Array dimensions -- covers coordinates [-70, 69] with padding for
+// windows (+/-5) and neighbor candidates (+/-2).
+static constexpr int OG_ARR = 140;
+static constexpr int OG_OFF = 70;
 
 // TT flags
 static constexpr int8_t OG_TT_EXACT = 0;
@@ -59,7 +66,7 @@ static constexpr int8_t OG_TT_LOWER = 1;
 static constexpr int8_t OG_TT_UPPER = 2;
 
 // ═══════════════════════════════════════════════════════════════════════
-//  Coordinate packing
+//  Coordinate packing  (still used for Coord values in vectors/turns)
 // ═══════════════════════════════════════════════════════════════════════
 using OgCoord = int64_t;
 
@@ -76,14 +83,6 @@ static inline bool og_coord_lt(OgCoord a, OgCoord b) {
 }
 static inline OgCoord og_coord_min(OgCoord a, OgCoord b) { return og_coord_lt(a, b) ? a : b; }
 static inline OgCoord og_coord_max(OgCoord a, OgCoord b) { return og_coord_lt(a, b) ? b : a; }
-
-// Window key: packs (d_idx, q, r) into int64_t.
-static constexpr int OG_WKEY_BIAS = 0x8000000; // 2^27
-static inline int64_t og_pack_wkey(int d_idx, int q, int r) {
-    return (static_cast<int64_t>(static_cast<uint8_t>(d_idx)) << 56) |
-           (static_cast<int64_t>(static_cast<uint32_t>(q + OG_WKEY_BIAS) & 0x0FFFFFFFu) << 28) |
-            static_cast<int64_t>(static_cast<uint32_t>(r + OG_WKEY_BIAS) & 0x0FFFFFFFu);
-}
 
 // ═══════════════════════════════════════════════════════════════════════
 //  Types
@@ -125,6 +124,64 @@ struct OgTTEntry {
 struct OgTimeUp {};
 
 // ═══════════════════════════════════════════════════════════════════════
+//  Helper structs for array-backed sets
+// ═══════════════════════════════════════════════════════════════════════
+struct OgHotEntry { int d, qi, ri; };
+
+struct OgHotSet {
+    bool bits[3][OG_ARR][OG_ARR];
+    std::vector<OgHotEntry> vec;
+
+    void clear() { std::memset(bits, 0, sizeof(bits)); vec.clear(); }
+
+    void insert(int d, int qi, int ri) {
+        if (!bits[d][qi][ri]) {
+            bits[d][qi][ri] = true;
+            vec.push_back({d, qi, ri});
+        }
+    }
+
+    void erase(int d, int qi, int ri) {
+        if (bits[d][qi][ri]) {
+            bits[d][qi][ri] = false;
+            for (size_t i = 0; i < vec.size(); i++) {
+                if (vec[i].d == d && vec[i].qi == qi && vec[i].ri == ri) {
+                    vec[i] = vec.back(); vec.pop_back(); break;
+                }
+            }
+        }
+    }
+};
+
+struct OgCandSet {
+    bool bits[OG_ARR][OG_ARR];
+    std::vector<OgCoord> vec;
+
+    void clear() { std::memset(bits, 0, sizeof(bits)); vec.clear(); }
+    bool empty() const { return vec.empty(); }
+    size_t size() const { return vec.size(); }
+    bool count(OgCoord c) const { return bits[og_pack_q(c) + OG_OFF][og_pack_r(c) + OG_OFF]; }
+
+    void insert(OgCoord c) {
+        int qi = og_pack_q(c) + OG_OFF, ri = og_pack_r(c) + OG_OFF;
+        if (!bits[qi][ri]) { bits[qi][ri] = true; vec.push_back(c); }
+    }
+
+    void erase(OgCoord c) {
+        int qi = og_pack_q(c) + OG_OFF, ri = og_pack_r(c) + OG_OFF;
+        if (bits[qi][ri]) {
+            bits[qi][ri] = false;
+            for (size_t i = 0; i < vec.size(); i++) {
+                if (vec[i] == c) { vec[i] = vec.back(); vec.pop_back(); break; }
+            }
+        }
+    }
+
+    auto begin() const { return vec.begin(); }
+    auto end()   const { return vec.end(); }
+};
+
+// ═══════════════════════════════════════════════════════════════════════
 //  Direction arrays
 // ═══════════════════════════════════════════════════════════════════════
 static constexpr int OG_DIR_Q[3] = {1, 0, 1};
@@ -142,19 +199,19 @@ static inline int og_hex_distance(int dq, int dr) {
     return std::max({std::abs(dq), std::abs(dr), std::abs(dq + dr)});
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-//  Zobrist tables (lazy, global, never cleared)
-// ═══════════════════════════════════════════════════════════════════════
-static og_flat_map<OgCoord, uint64_t> og_g_zobrist_a, og_g_zobrist_b;
-static std::mt19937_64 og_g_zobrist_rng(12345);
+// Zobrist tables -- flat arrays, deterministic per (q, r) via splitmix64.
+static uint64_t og_g_zobrist_a[OG_ARR][OG_ARR];
+static uint64_t og_g_zobrist_b[OG_ARR][OG_ARR];
 
-static inline uint64_t og_get_zobrist(OgCoord c, int8_t player) {
-    auto& tbl = (player == P_A) ? og_g_zobrist_a : og_g_zobrist_b;
-    auto it = tbl.find(c);
-    if (it != tbl.end()) return it->second;
-    uint64_t v = og_g_zobrist_rng();
-    tbl[c] = v;
-    return v;
+static inline uint64_t og_splitmix64(uint64_t x) {
+    x ^= x >> 30; x *= 0xbf58476d1ce4e5b9ULL;
+    x ^= x >> 27; x *= 0x94d049bb133111ebULL;
+    x ^= x >> 31; return x;
+}
+
+static inline uint64_t og_get_zobrist(int q, int r, int8_t player) {
+    return (player == P_A) ? og_g_zobrist_a[q + OG_OFF][r + OG_OFF]
+                           : og_g_zobrist_b[q + OG_OFF][r + OG_OFF];
 }
 
 static bool og_g_tables_ready = false;
@@ -167,11 +224,19 @@ static void og_ensure_tables() {
         for (int dr = -OG_NEIGHBOR_DIST; dr <= OG_NEIGHBOR_DIST; dr++)
             if ((dq || dr) && og_hex_distance(dq, dr) <= OG_NEIGHBOR_DIST)
                 og_g_nb_offsets.push_back({dq, dr});
+    for (int i = 0; i < OG_ARR; i++)
+        for (int j = 0; j < OG_ARR; j++) {
+            int q = i - OG_OFF, r = j - OG_OFF;
+            uint64_t base = static_cast<uint64_t>(static_cast<uint32_t>(q)) << 32
+                          | static_cast<uint64_t>(static_cast<uint32_t>(r));
+            og_g_zobrist_a[i][j] = og_splitmix64(base ^ 0xa02bdbf7bb3c0195ULL);
+            og_g_zobrist_b[i][j] = og_splitmix64(base ^ 0x3f84d5b5b5470917ULL);
+        }
     og_g_tables_ready = true;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  MinimaxBot  (namespace og -- hash-map variant)
+//  MinimaxBot  (namespace og -- flat-array variant)
 // ═══════════════════════════════════════════════════════════════════════
 namespace og {
 
@@ -195,7 +260,7 @@ public:
         og_ensure_tables();
     }
 
-    // ── Pattern loading ──
+    // ── Pattern loading (call from wrapper after construction) ──
     void load_patterns(const double* values, int count, int eval_length,
                        const std::string& path = "") {
         _pv.assign(values, values + count);
@@ -230,11 +295,22 @@ public:
         if (gs.cells.empty())
             return {0, 0, 0, 0, 1};
 
+        // ── Clear arrays ──
+        std::memset(_board, 0, sizeof(_board));
+        std::memset(_wc, 0, sizeof(_wc));
+        std::memset(_wp, 0, sizeof(_wp));
+        std::memset(_cand_rc, 0, sizeof(_cand_rc));
+        _board_cells.clear();
+        _hot_a.clear();
+        _hot_b.clear();
+        _cand_set.clear();
+        _rc_stack.clear();
+
         // ── Populate board from GameState ──
-        _board.clear();
-        _board.reserve(gs.cells.size() + 64);
-        for (const auto& cell : gs.cells)
-            _board[og_pack(cell.q, cell.r)] = cell.player;
+        for (const auto& cell : gs.cells) {
+            _board[cell.q + OG_OFF][cell.r + OG_OFF] = cell.player;
+            _board_cells.push_back(og_pack(cell.q, cell.r));
+        }
 
         _cur_player = gs.cur_player;
         _moves_left = gs.moves_left;
@@ -260,79 +336,74 @@ public:
 
         // ── Zobrist ──
         _hash = 0;
-        for (const auto& kv : _board)
-            _hash ^= og_get_zobrist(kv.first, kv.second);
+        for (OgCoord c : _board_cells)
+            _hash ^= og_get_zobrist(og_pack_q(c), og_pack_r(c),
+                                  _board[og_pack_q(c) + OG_OFF][og_pack_r(c) + OG_OFF]);
 
         // ── Cell value mapping ──
         if (_player == P_A) { _cell_a = 1; _cell_b = 2; }
         else                { _cell_a = 2; _cell_b = 1; }
 
         // ── Init 6-cell windows ──
-        _wc.clear();
-        _hot_a.clear();
-        _hot_b.clear();
-        {
-            og_flat_set<int64_t> seen;
-            for (const auto& kv : _board) {
-                int bq = og_pack_q(kv.first), br = og_pack_r(kv.first);
-                for (const auto& wo : og_g_win_offsets) {
-                    int64_t wkey = og_pack_wkey(wo.d_idx, bq - wo.oq, br - wo.or_);
-                    if (!seen.insert(wkey).second) continue;
-                    int d = wo.d_idx;
-                    int sq = bq - wo.oq, sr = br - wo.or_;
-                    int ac = 0, bc = 0;
-                    for (int j = 0; j < OG_WIN_LENGTH; j++) {
-                        auto it = _board.find(og_pack(sq + j * OG_DIR_Q[d], sr + j * OG_DIR_R[d]));
-                        if (it != _board.end()) { if (it->second == P_A) ac++; else bc++; }
-                    }
-                    if (ac || bc) _wc[wkey] = {static_cast<int8_t>(ac), static_cast<int8_t>(bc)};
+        for (OgCoord c : _board_cells) {
+            int bq = og_pack_q(c), br = og_pack_r(c);
+            int bqi = bq + OG_OFF, bri = br + OG_OFF;
+            for (const auto& wo : og_g_win_offsets) {
+                int sqi = bqi - wo.oq, sri = bri - wo.or_;
+                auto& counts = _wc[wo.d_idx][sqi][sri];
+                if (counts.first != 0 || counts.second != 0) continue;
+                int d = wo.d_idx;
+                int sq = bq - wo.oq, sr = br - wo.or_;
+                int ac = 0, bc = 0;
+                for (int j = 0; j < OG_WIN_LENGTH; j++) {
+                    int8_t v = _board[sq + j * OG_DIR_Q[d] + OG_OFF][sr + j * OG_DIR_R[d] + OG_OFF];
+                    if (v == P_A) ac++;
+                    else if (v == P_B) bc++;
                 }
-            }
-            for (const auto& kv : _wc) {
-                if (kv.second.first  >= 4) _hot_a.insert(kv.first);
-                if (kv.second.second >= 4) _hot_b.insert(kv.first);
+                if (ac || bc) {
+                    counts = {static_cast<int8_t>(ac), static_cast<int8_t>(bc)};
+                    if (ac >= 4) _hot_a.insert(wo.d_idx, sqi, sri);
+                    if (bc >= 4) _hot_b.insert(wo.d_idx, sqi, sri);
+                }
             }
         }
 
         // ── Init N-cell eval windows ──
-        _wp.clear();
         _eval_score = 0.0;
         {
             const double* pv = _pv.data();
-            og_flat_set<int64_t> seen;
-            for (const auto& kv : _board) {
-                int bq = og_pack_q(kv.first), br = og_pack_r(kv.first);
+            for (OgCoord c : _board_cells) {
+                int bq = og_pack_q(c), br = og_pack_r(c);
+                int bqi = bq + OG_OFF, bri = br + OG_OFF;
                 for (const auto& eo : _eval_offsets) {
-                    int64_t wkey8 = og_pack_wkey(3 + eo.d_idx, bq - eo.oq, br - eo.or_);
-                    if (!seen.insert(wkey8).second) continue;
+                    int sqi = bqi - eo.oq, sri = bri - eo.or_;
+                    int& slot = _wp[eo.d_idx][sqi][sri];
+                    if (slot != 0) continue;
                     int sq = bq - eo.oq, sr = br - eo.or_;
                     int d = eo.d_idx;
                     int pi = 0;
                     bool has = false;
                     for (int j = 0; j < _eval_length; j++) {
-                        auto it = _board.find(og_pack(sq + j * OG_DIR_Q[d], sr + j * OG_DIR_R[d]));
-                        if (it != _board.end()) {
-                            pi += ((it->second == P_A) ? _cell_a : _cell_b) * _pow3[j];
+                        int8_t v = _board[sq + j * OG_DIR_Q[d] + OG_OFF][sr + j * OG_DIR_R[d] + OG_OFF];
+                        if (v != 0) {
+                            pi += ((v == P_A) ? _cell_a : _cell_b) * _pow3[j];
                             has = true;
                         }
                     }
-                    if (has) { _wp[wkey8] = pi; _eval_score += pv[pi]; }
+                    if (has) { slot = pi; _eval_score += pv[pi]; }
                 }
             }
         }
 
         // ── Init candidates ──
-        _cand_rc.clear();
-        _cand_set.clear();
-        _rc_stack.clear();
-        for (const auto& kv : _board) {
-            int bq = og_pack_q(kv.first), br = og_pack_r(kv.first);
+        for (OgCoord c : _board_cells) {
+            int bq = og_pack_q(c), br = og_pack_r(c);
             for (const auto& nb : og_g_nb_offsets) {
-                OgCoord nc = og_pack(bq + nb.dq, br + nb.dr);
-                if (!_board.count(nc)) {
-                    _cand_rc[nc]++;
-                    _cand_set.insert(nc);
-                }
+                int nq = bq + nb.dq, nr = br + nb.dr;
+                int nqi = nq + OG_OFF, nri = nr + OG_OFF;
+                _cand_rc[nqi][nri]++;
+                if (_board[nqi][nri] == 0)
+                    _cand_set.insert(og_pack(nq, nr));
             }
         }
 
@@ -346,18 +417,23 @@ public:
 
         OgTurn best_move = turns[0];
 
-        // ── Save state for OgTimeUp rollback ──
-        auto saved_board    = _board;
+        // ── Save state for TimeUp rollback ──
+        if (!_saved) _saved = std::make_unique<OgSavedArrays>();
+        std::memcpy(_saved->board, _board, sizeof(_board));
+        std::memcpy(_saved->wc, _wc, sizeof(_wc));
+        std::memcpy(_saved->wp, _wp, sizeof(_wp));
+        std::memcpy(_saved->cand_rc, _cand_rc, sizeof(_cand_rc));
+        std::memcpy(_saved->cand_bits, _cand_set.bits, sizeof(_cand_set.bits));
+        _saved->cand_vec = _cand_set.vec;
+        std::memcpy(_saved->hot_a_bits, _hot_a.bits, sizeof(_hot_a.bits));
+        _saved->hot_a_vec = _hot_a.vec;
+        std::memcpy(_saved->hot_b_bits, _hot_b.bits, sizeof(_hot_b.bits));
+        _saved->hot_b_vec = _hot_b.vec;
+        _saved->board_cells = _board_cells;
         auto saved_st       = OgSavedState{_cur_player, _moves_left, _winner, _game_over};
         int  saved_mc       = _move_count;
         uint64_t saved_hash = _hash;
         double   saved_eval = _eval_score;
-        auto saved_wc       = _wc;
-        auto saved_wp       = _wp;
-        auto saved_cs       = _cand_set;
-        auto saved_cr       = _cand_rc;
-        auto saved_ha       = _hot_a;
-        auto saved_hb       = _hot_b;
 
         for (int depth = 1; depth <= max_depth; depth++) {
             try {
@@ -382,7 +458,17 @@ public:
                     });
                 if (std::abs(last_score) >= OG_WIN_SCORE) break;
             } catch (const OgTimeUp&) {
-                _board      = std::move(saved_board);
+                std::memcpy(_board, _saved->board, sizeof(_board));
+                std::memcpy(_wc, _saved->wc, sizeof(_wc));
+                std::memcpy(_wp, _saved->wp, sizeof(_wp));
+                std::memcpy(_cand_rc, _saved->cand_rc, sizeof(_cand_rc));
+                std::memcpy(_cand_set.bits, _saved->cand_bits, sizeof(_cand_set.bits));
+                _cand_set.vec = std::move(_saved->cand_vec);
+                std::memcpy(_hot_a.bits, _saved->hot_a_bits, sizeof(_hot_a.bits));
+                _hot_a.vec = std::move(_saved->hot_a_vec);
+                std::memcpy(_hot_b.bits, _saved->hot_b_bits, sizeof(_hot_b.bits));
+                _hot_b.vec = std::move(_saved->hot_b_vec);
+                _board_cells = std::move(_saved->board_cells);
                 _move_count = saved_mc;
                 _cur_player = saved_st.cur_player;
                 _moves_left = saved_st.moves_left;
@@ -390,12 +476,6 @@ public:
                 _game_over  = saved_st.game_over;
                 _hash       = saved_hash;
                 _eval_score = saved_eval;
-                _wc         = std::move(saved_wc);
-                _wp         = std::move(saved_wp);
-                _cand_set   = std::move(saved_cs);
-                _cand_rc    = std::move(saved_cr);
-                _hot_a      = std::move(saved_ha);
-                _hot_b      = std::move(saved_hb);
                 break;
             }
         }
@@ -412,13 +492,27 @@ private:
     std::vector<int>       _pow3;
     std::string            _pattern_path_str;
 
-    // ── Internal game state ──
-    og_flat_map<OgCoord, int8_t> _board;
+    // ── Board state (flat arrays) ──
+    int8_t _board[OG_ARR][OG_ARR] = {};
+    std::vector<OgCoord> _board_cells;
+
     int8_t _cur_player  = P_A;
     int8_t _moves_left  = 1;
     int8_t _winner      = P_NONE;
     bool   _game_over   = false;
     int    _move_count  = 0;
+
+    // ── 6-cell window counts ──
+    std::pair<int8_t,int8_t> _wc[3][OG_ARR][OG_ARR] = {};
+    OgHotSet _hot_a, _hot_b;
+
+    // ── N-cell eval window patterns ──
+    int _wp[3][OG_ARR][OG_ARR] = {};
+
+    // ── Candidates ──
+    int8_t   _cand_rc[OG_ARR][OG_ARR] = {};
+    OgCandSet _cand_set;
+    std::vector<int> _rc_stack;
 
     // ── Search state ──
     using Clock = std::chrono::steady_clock;
@@ -429,25 +523,31 @@ private:
     int8_t   _cell_b    = 2;
     double   _eval_score = 0;
 
-    // ── 6-cell window counts ──
-    og_flat_map<int64_t, std::pair<int8_t,int8_t>> _wc;
-    og_flat_set<int64_t> _hot_a, _hot_b;
-
-    // ── N-cell eval window patterns ──
-    og_flat_map<int64_t, int> _wp;
-
-    // ── Candidates ──
-    og_flat_map<OgCoord, int> _cand_rc;
-    og_flat_set<OgCoord>      _cand_set;
-    std::vector<int>          _rc_stack;
-
-    // ── Transposition table & history ──
+    // ── Transposition table & history (hash maps) ──
     og_flat_map<uint64_t, OgTTEntry> _tt;
     og_flat_map<OgCoord, int>        _history;
 
     // ── RNG ──
     std::mt19937 _rng;
 
+    // ── Saved state for TimeUp rollback ──
+    struct OgSavedArrays {
+        int8_t board[OG_ARR][OG_ARR];
+        std::pair<int8_t,int8_t> wc[3][OG_ARR][OG_ARR];
+        int wp[3][OG_ARR][OG_ARR];
+        int8_t cand_rc[OG_ARR][OG_ARR];
+        bool cand_bits[OG_ARR][OG_ARR];
+        std::vector<OgCoord> cand_vec;
+        bool hot_a_bits[3][OG_ARR][OG_ARR];
+        std::vector<OgHotEntry> hot_a_vec;
+        bool hot_b_bits[3][OG_ARR][OG_ARR];
+        std::vector<OgHotEntry> hot_b_vec;
+        std::vector<OgCoord> board_cells;
+    };
+    std::unique_ptr<OgSavedArrays> _saved;
+
+    // ────────────────────────────────────────────────────────────────
+    //  Pattern table construction
     // ────────────────────────────────────────────────────────────────
     void _build_eval_tables() {
         _eval_offsets.clear();
@@ -460,12 +560,18 @@ private:
             _pow3[i] = _pow3[i - 1] * 3;
     }
 
+    // ────────────────────────────────────────────────────────────────
+    //  Time control
+    // ────────────────────────────────────────────────────────────────
     inline void _check_time() {
         _nodes++;
         if ((_nodes & 1023) == 0 && Clock::now() >= _deadline)
             throw OgTimeUp{};
     }
 
+    // ────────────────────────────────────────────────────────────────
+    //  TT key
+    // ────────────────────────────────────────────────────────────────
     inline uint64_t _tt_key() const {
         return _hash ^ (static_cast<uint64_t>(_cur_player) * 0x9e3779b97f4a7c15ULL)
                       ^ (static_cast<uint64_t>(_moves_left) * 0x517cc1b727220a95ULL);
@@ -476,28 +582,29 @@ private:
     // ────────────────────────────────────────────────────────────────
     void _make(int q, int r) {
         int8_t player = _cur_player;
-        OgCoord cell = og_pack(q, r);
 
-        _hash ^= og_get_zobrist(cell, player);
+        // Zobrist
+        _hash ^= og_get_zobrist(q, r, player);
 
         int8_t cell_val = (player == P_A) ? _cell_a : _cell_b;
+        int qi = q + OG_OFF, ri = r + OG_OFF;
 
         // ── 6-cell windows ──
         bool won = false;
         if (player == P_A) {
             for (const auto& wo : og_g_win_offsets) {
-                int64_t wkey = og_pack_wkey(wo.d_idx, q - wo.oq, r - wo.or_);
-                auto& counts = _wc[wkey];
+                int sqi = qi - wo.oq, sri = ri - wo.or_;
+                auto& counts = _wc[wo.d_idx][sqi][sri];
                 counts.first++;
-                if (counts.first >= 4) _hot_a.insert(wkey);
+                if (counts.first >= 4) _hot_a.insert(wo.d_idx, sqi, sri);
                 if (counts.first == OG_WIN_LENGTH && counts.second == 0) won = true;
             }
         } else {
             for (const auto& wo : og_g_win_offsets) {
-                int64_t wkey = og_pack_wkey(wo.d_idx, q - wo.oq, r - wo.or_);
-                auto& counts = _wc[wkey];
+                int sqi = qi - wo.oq, sri = ri - wo.or_;
+                auto& counts = _wc[wo.d_idx][sqi][sri];
                 counts.second++;
-                if (counts.second >= 4) _hot_b.insert(wkey);
+                if (counts.second >= 4) _hot_b.insert(wo.d_idx, sqi, sri);
                 if (counts.second == OG_WIN_LENGTH && counts.first == 0) won = true;
             }
         }
@@ -505,32 +612,31 @@ private:
         // ── N-cell eval windows ──
         const double* pv = _pv.data();
         for (const auto& eo : _eval_offsets) {
-            int64_t wkey8 = og_pack_wkey(3 + eo.d_idx, q - eo.oq, r - eo.or_);
-            auto it = _wp.find(wkey8);
-            int old_pi = (it != _wp.end()) ? it->second : 0;
+            int sqi = qi - eo.oq, sri = ri - eo.or_;
+            int& slot = _wp[eo.d_idx][sqi][sri];
+            int old_pi = slot;
             int new_pi = old_pi + cell_val * _pow3[eo.k];
             _eval_score += pv[new_pi] - pv[old_pi];
-            if (it != _wp.end())
-                it->second = new_pi;
-            else
-                _wp[wkey8] = new_pi;
+            slot = new_pi;
         }
 
         // ── Candidates ──
+        OgCoord cell = og_pack(q, r);
         _cand_set.erase(cell);
-        auto rc_it = _cand_rc.find(cell);
-        _rc_stack.push_back((rc_it != _cand_rc.end()) ? rc_it->second : 0);
-        if (rc_it != _cand_rc.end()) _cand_rc.erase(rc_it);
+        _rc_stack.push_back(_cand_rc[qi][ri]);
+        _cand_rc[qi][ri] = 0;
 
         for (const auto& nb : og_g_nb_offsets) {
-            OgCoord nc = og_pack(q + nb.dq, r + nb.dr);
-            _cand_rc[nc]++;
-            if (!_board.count(nc))
-                _cand_set.insert(nc);
+            int nq = q + nb.dq, nr = r + nb.dr;
+            int nqi = nq + OG_OFF, nri = nr + OG_OFF;
+            _cand_rc[nqi][nri]++;
+            if (_board[nqi][nri] == 0)
+                _cand_set.insert(og_pack(nq, nr));
         }
 
         // Place stone
-        _board[cell] = player;
+        _board[qi][ri] = player;
+        _board_cells.push_back(cell);
         _move_count++;
 
         if (won) {
@@ -546,69 +652,69 @@ private:
     }
 
     void _undo(int q, int r, const OgSavedState& st, int8_t player) {
-        OgCoord cell = og_pack(q, r);
+        int qi = q + OG_OFF, ri = r + OG_OFF;
 
-        _board.erase(cell);
+        // Remove stone
+        _board[qi][ri] = 0;
+        _board_cells.pop_back();
         _move_count--;
         _cur_player = st.cur_player;
         _moves_left = st.moves_left;
         _winner     = st.winner;
         _game_over  = st.game_over;
 
-        _hash ^= og_get_zobrist(cell, player);
+        // Zobrist
+        _hash ^= og_get_zobrist(q, r, player);
 
         int8_t cell_val = (player == P_A) ? _cell_a : _cell_b;
 
         // ── 6-cell windows ──
         if (player == P_A) {
             for (const auto& wo : og_g_win_offsets) {
-                int64_t wkey = og_pack_wkey(wo.d_idx, q - wo.oq, r - wo.or_);
-                auto& counts = _wc[wkey];
+                int sqi = qi - wo.oq, sri = ri - wo.or_;
+                auto& counts = _wc[wo.d_idx][sqi][sri];
                 counts.first--;
-                if (counts.first < 4) _hot_a.erase(wkey);
+                if (counts.first < 4) _hot_a.erase(wo.d_idx, sqi, sri);
             }
         } else {
             for (const auto& wo : og_g_win_offsets) {
-                int64_t wkey = og_pack_wkey(wo.d_idx, q - wo.oq, r - wo.or_);
-                auto& counts = _wc[wkey];
+                int sqi = qi - wo.oq, sri = ri - wo.or_;
+                auto& counts = _wc[wo.d_idx][sqi][sri];
                 counts.second--;
-                if (counts.second < 4) _hot_b.erase(wkey);
+                if (counts.second < 4) _hot_b.erase(wo.d_idx, sqi, sri);
             }
         }
 
         // ── N-cell eval windows ──
         const double* pv = _pv.data();
         for (const auto& eo : _eval_offsets) {
-            int64_t wkey8 = og_pack_wkey(3 + eo.d_idx, q - eo.oq, r - eo.or_);
-            int old_pi = _wp[wkey8];
+            int sqi = qi - eo.oq, sri = ri - eo.or_;
+            int& slot = _wp[eo.d_idx][sqi][sri];
+            int old_pi = slot;
             int new_pi = old_pi - cell_val * _pow3[eo.k];
             _eval_score += pv[new_pi] - pv[old_pi];
-            if (new_pi == 0)
-                _wp.erase(wkey8);
-            else
-                _wp[wkey8] = new_pi;
+            slot = new_pi;
         }
 
         // ── Candidates ──
         for (const auto& nb : og_g_nb_offsets) {
-            OgCoord nc = og_pack(q + nb.dq, r + nb.dr);
-            auto it = _cand_rc.find(nc);
-            int c = it->second - 1;
-            if (c == 0) {
-                _cand_rc.erase(it);
-                _cand_set.erase(nc);
-            } else {
-                it->second = c;
-            }
+            int nq = q + nb.dq, nr = r + nb.dr;
+            int nqi = nq + OG_OFF, nri = nr + OG_OFF;
+            _cand_rc[nqi][nri]--;
+            if (_cand_rc[nqi][nri] == 0)
+                _cand_set.erase(og_pack(nq, nr));
         }
         int saved_rc = _rc_stack.back();
         _rc_stack.pop_back();
         if (saved_rc > 0) {
-            _cand_rc[cell] = saved_rc;
+            OgCoord cell = og_pack(q, r);
+            _cand_rc[qi][ri] = saved_rc;
             _cand_set.insert(cell);
         }
     }
 
+    // ────────────────────────────────────────────────────────────────
+    //  Turn make / undo
     // ────────────────────────────────────────────────────────────────
     int _make_turn(const OgTurn& turn, OgUndoStep steps[2]) {
         int q1 = og_pack_q(turn.first),  r1 = og_pack_r(turn.first);
@@ -630,15 +736,15 @@ private:
     }
 
     // ────────────────────────────────────────────────────────────────
+    //  Move delta
+    // ────────────────────────────────────────────────────────────────
     double _move_delta(int q, int r, bool is_a) const {
         int8_t cell_val = is_a ? _cell_a : _cell_b;
         const double* pv = _pv.data();
+        int qi = q + OG_OFF, ri = r + OG_OFF;
         double delta = 0.0;
         for (const auto& eo : _eval_offsets) {
-            int64_t wkey8 = og_pack_wkey(3 + eo.d_idx, q - eo.oq, r - eo.or_);
-            int old_pi = 0;
-            auto it = _wp.find(wkey8);
-            if (it != _wp.end()) old_pi = it->second;
+            int old_pi = _wp[eo.d_idx][qi - eo.oq][ri - eo.or_];
             int new_pi = old_pi + cell_val * _pow3[eo.k];
             delta += pv[new_pi] - pv[old_pi];
         }
@@ -646,28 +752,27 @@ private:
     }
 
     // ────────────────────────────────────────────────────────────────
+    //  Win / threat detection
+    // ────────────────────────────────────────────────────────────────
     std::pair<bool, OgTurn> _find_instant_win(int8_t player) const {
         int p_idx = (player == P_A) ? 0 : 1;
         const auto& hot = (player == P_A) ? _hot_a : _hot_b;
 
-        for (int64_t wkey : hot) {
-            auto wit = _wc.find(wkey);
-            if (wit == _wc.end()) continue;
-            int my_count  = (p_idx == 0) ? wit->second.first : wit->second.second;
-            int opp_count = (p_idx == 0) ? wit->second.second : wit->second.first;
+        for (const auto& he : hot.vec) {
+            auto& counts = _wc[he.d][he.qi][he.ri];
+            int my_count  = (p_idx == 0) ? counts.first : counts.second;
+            int opp_count = (p_idx == 0) ? counts.second : counts.first;
 
             if (my_count >= OG_WIN_LENGTH - 2 && opp_count == 0) {
-                int d_idx = static_cast<int>(static_cast<uint8_t>(wkey >> 56));
-                int sq = static_cast<int>((static_cast<uint64_t>(wkey) >> 28) & 0x0FFFFFFFu) - OG_WKEY_BIAS;
-                int sr = static_cast<int>( static_cast<uint64_t>(wkey)        & 0x0FFFFFFFu) - OG_WKEY_BIAS;
-                int dq = OG_DIR_Q[d_idx], dr = OG_DIR_R[d_idx];
+                int sq = he.qi - OG_OFF, sr = he.ri - OG_OFF;
+                int dq = OG_DIR_Q[he.d], dr = OG_DIR_R[he.d];
 
                 OgCoord cells[OG_WIN_LENGTH];
                 int n = 0;
                 for (int j = 0; j < OG_WIN_LENGTH; j++) {
-                    OgCoord c = og_pack(sq + j * dq, sr + j * dr);
-                    if (!_board.count(c))
-                        cells[n++] = c;
+                    int cq = sq + j * dq, cr = sr + j * dr;
+                    if (_board[cq + OG_OFF][cr + OG_OFF] == 0)
+                        cells[n++] = og_pack(cq, cr);
                 }
                 if (n == 1) {
                     OgCoord other = cells[0];
@@ -690,21 +795,18 @@ private:
         int p_idx = (player == P_A) ? 0 : 1;
         const auto& hot = (player == P_A) ? _hot_a : _hot_b;
 
-        for (int64_t wkey : hot) {
-            auto wit = _wc.find(wkey);
-            if (wit == _wc.end()) continue;
-            int opp_count = (p_idx == 0) ? wit->second.second : wit->second.first;
+        for (const auto& he : hot.vec) {
+            auto& counts = _wc[he.d][he.qi][he.ri];
+            int opp_count = (p_idx == 0) ? counts.second : counts.first;
             if (opp_count != 0) continue;
 
-            int d_idx = static_cast<int>(static_cast<uint8_t>(wkey >> 56));
-            int sq = static_cast<int>((static_cast<uint64_t>(wkey) >> 28) & 0x0FFFFFFFu) - OG_WKEY_BIAS;
-            int sr = static_cast<int>( static_cast<uint64_t>(wkey)        & 0x0FFFFFFFu) - OG_WKEY_BIAS;
-            int dq = OG_DIR_Q[d_idx], dr = OG_DIR_R[d_idx];
+            int sq = he.qi - OG_OFF, sr = he.ri - OG_OFF;
+            int dq = OG_DIR_Q[he.d], dr = OG_DIR_R[he.d];
 
             for (int j = 0; j < OG_WIN_LENGTH; j++) {
-                OgCoord c = og_pack(sq + j * dq, sr + j * dr);
-                if (!_board.count(c))
-                    threats.insert(c);
+                int cq = sq + j * dq, cr = sr + j * dr;
+                if (_board[cq + OG_OFF][cr + OG_OFF] == 0)
+                    threats.insert(og_pack(cq, cr));
             }
         }
         return threats;
@@ -716,23 +818,20 @@ private:
         const auto& hot = (opponent == P_A) ? _hot_a : _hot_b;
 
         std::vector<og_flat_set<OgCoord>> must_hit;
-        for (int64_t wkey : hot) {
-            auto wit = _wc.find(wkey);
-            if (wit == _wc.end()) continue;
-            int my_count  = (p_idx == 0) ? wit->second.first  : wit->second.second;
-            int opp_count = (p_idx == 0) ? wit->second.second : wit->second.first;
+        for (const auto& he : hot.vec) {
+            auto& counts = _wc[he.d][he.qi][he.ri];
+            int my_count  = (p_idx == 0) ? counts.first  : counts.second;
+            int opp_count = (p_idx == 0) ? counts.second : counts.first;
             if (my_count < OG_WIN_LENGTH - 2 || opp_count != 0) continue;
 
-            int d_idx = static_cast<int>(static_cast<uint8_t>(wkey >> 56));
-            int sq = static_cast<int>((static_cast<uint64_t>(wkey) >> 28) & 0x0FFFFFFFu) - OG_WKEY_BIAS;
-            int sr = static_cast<int>( static_cast<uint64_t>(wkey)        & 0x0FFFFFFFu) - OG_WKEY_BIAS;
-            int dq = OG_DIR_Q[d_idx], dr = OG_DIR_R[d_idx];
+            int sq = he.qi - OG_OFF, sr = he.ri - OG_OFF;
+            int dq = OG_DIR_Q[he.d], dr = OG_DIR_R[he.d];
 
             og_flat_set<OgCoord> empties;
             for (int j = 0; j < OG_WIN_LENGTH; j++) {
-                OgCoord c = og_pack(sq + j * dq, sr + j * dr);
-                if (!_board.count(c))
-                    empties.insert(c);
+                int cq = sq + j * dq, cr = sr + j * dr;
+                if (_board[cq + OG_OFF][cr + OG_OFF] == 0)
+                    empties.insert(og_pack(cq, cr));
             }
             must_hit.push_back(std::move(empties));
         }
@@ -752,6 +851,8 @@ private:
         return out;
     }
 
+    // ────────────────────────────────────────────────────────────────
+    //  Turn generation
     // ────────────────────────────────────────────────────────────────
     std::vector<OgTurn> _generate_turns() {
         auto [found, wt] = _find_instant_win(_cur_player);
@@ -782,22 +883,24 @@ private:
             cands.push_back(scored[i].second);
 
         // Colony candidate
-        if (!_board.empty()) {
+        if (!_board_cells.empty()) {
             int64_t sq = 0, sr = 0;
-            for (const auto& kv : _board) { sq += og_pack_q(kv.first); sr += og_pack_r(kv.first); }
-            int cq = static_cast<int>(sq / static_cast<int64_t>(_board.size()));
-            int cr = static_cast<int>(sr / static_cast<int64_t>(_board.size()));
+            for (OgCoord c : _board_cells) { sq += og_pack_q(c); sr += og_pack_r(c); }
+            int cq = static_cast<int>(sq / static_cast<int64_t>(_board_cells.size()));
+            int cr = static_cast<int>(sr / static_cast<int64_t>(_board_cells.size()));
             int max_r = 0;
-            for (const auto& kv : _board) {
-                int d = og_hex_distance(og_pack_q(kv.first) - cq, og_pack_r(kv.first) - cr);
+            for (OgCoord c : _board_cells) {
+                int d = og_hex_distance(og_pack_q(c) - cq, og_pack_r(c) - cr);
                 if (d > max_r) max_r = d;
             }
             int cd = max_r + 3;
             std::uniform_int_distribution<int> dist(0, 5);
             int di = dist(_rng);
-            OgCoord colony = og_pack(cq + OG_COLONY_DQ[di] * cd, cr + OG_COLONY_DR[di] * cd);
-            if (!_board.count(colony))
-                cands.push_back(colony);
+            int col_q = cq + OG_COLONY_DQ[di] * cd;
+            int col_r = cr + OG_COLONY_DR[di] * cd;
+            if (std::abs(col_q) < OG_OFF && std::abs(col_r) < OG_OFF &&
+                _board[col_q + OG_OFF][col_r + OG_OFF] == 0)
+                cands.push_back(og_pack(col_q, col_r));
         }
 
         int n = static_cast<int>(cands.size());
@@ -860,6 +963,8 @@ private:
         return {{og_coord_min(tc, best_comp), og_coord_max(tc, best_comp)}};
     }
 
+    // ────────────────────────────────────────────────────────────────
+    //  Quiescence search
     // ────────────────────────────────────────────────────────────────
     double _quiescence(double alpha, double beta, int qdepth) {
         _check_time();
@@ -930,6 +1035,8 @@ private:
     }
 
     // ────────────────────────────────────────────────────────────────
+    //  Root search
+    // ────────────────────────────────────────────────────────────────
     std::pair<OgTurn, og_flat_map<OgTurn, double, OgTurnHash>>
     _search_root(std::vector<OgTurn>& turns, int depth) {
         bool maximizing = (_cur_player == _player);
@@ -960,6 +1067,8 @@ private:
         return {best, std::move(scores)};
     }
 
+    // ────────────────────────────────────────────────────────────────
+    //  Minimax
     // ────────────────────────────────────────────────────────────────
     double _minimax(int depth, double alpha, double beta) {
         _check_time();
@@ -993,6 +1102,7 @@ private:
             return sc;
         }
 
+        // Instant win for current player
         {
             auto [found, wt] = _find_instant_win(_cur_player);
             if (found) {
@@ -1005,6 +1115,7 @@ private:
             }
         }
 
+        // Opponent instant win -> check if blockable
         int8_t opponent = (_cur_player == P_A) ? P_B : P_A;
         {
             auto [opp_found, opp_wt] = _find_instant_win(opponent);
@@ -1012,21 +1123,19 @@ private:
                 int p_idx = (opponent == P_A) ? 0 : 1;
                 const auto& hot = (opponent == P_A) ? _hot_a : _hot_b;
                 std::vector<og_flat_set<OgCoord>> must_hit;
-                for (int64_t wkey : hot) {
-                    auto wit = _wc.find(wkey);
-                    if (wit == _wc.end()) continue;
-                    int mc = (p_idx == 0) ? wit->second.first  : wit->second.second;
-                    int oc = (p_idx == 0) ? wit->second.second : wit->second.first;
+                for (const auto& he : hot.vec) {
+                    auto& counts = _wc[he.d][he.qi][he.ri];
+                    int mc = (p_idx == 0) ? counts.first  : counts.second;
+                    int oc = (p_idx == 0) ? counts.second : counts.first;
                     if (mc < OG_WIN_LENGTH - 2 || oc != 0) continue;
 
-                    int d_idx = static_cast<int>(static_cast<uint8_t>(wkey >> 56));
-                    int sq = static_cast<int>((static_cast<uint64_t>(wkey) >> 28) & 0x0FFFFFFFu) - OG_WKEY_BIAS;
-                    int sr = static_cast<int>( static_cast<uint64_t>(wkey)        & 0x0FFFFFFFu) - OG_WKEY_BIAS;
-                    int dq = OG_DIR_Q[d_idx], dr = OG_DIR_R[d_idx];
+                    int sq = he.qi - OG_OFF, sr = he.ri - OG_OFF;
+                    int dq = OG_DIR_Q[he.d], dr = OG_DIR_R[he.d];
                     og_flat_set<OgCoord> empties;
                     for (int j = 0; j < OG_WIN_LENGTH; j++) {
-                        OgCoord c = og_pack(sq + j * dq, sr + j * dr);
-                        if (!_board.count(c)) empties.insert(c);
+                        int cq = sq + j * dq, cr = sr + j * dr;
+                        if (_board[cq + OG_OFF][cr + OG_OFF] == 0)
+                            empties.insert(og_pack(cq, cr));
                     }
                     must_hit.push_back(std::move(empties));
                 }
@@ -1055,6 +1164,7 @@ private:
         double orig_alpha = alpha, orig_beta = beta;
         bool maximizing = (_cur_player == _player);
 
+        // Generate candidates and turns
         std::vector<OgTurn> turns;
         {
             std::vector<OgCoord> cands(_cand_set.begin(), _cand_set.end());
@@ -1102,6 +1212,7 @@ private:
             return sc;
         }
 
+        // TT move ordering
         if (has_tt_move) {
             for (size_t i = 0; i < turns.size(); i++)
                 if (turns[i] == tt_move) { std::swap(turns[0], turns[i]); break; }

@@ -19,7 +19,7 @@ setup(
         Pybind11Extension("ai_cpp_og", ["cpp/ai_cpp_og.cpp"],
                           cxx_std=17, extra_compile_args=common_args,
                           include_dirs=cpp_dir),
-        Pybind11Extension("ai_cpp_prof", ["ai_cpp_prof.cpp"],
+Pybind11Extension("ai_cpp_rank", ["cpp/ai_cpp_rank.cpp"],
                           cxx_std=17, extra_compile_args=common_args,
                           include_dirs=cpp_dir),
     ],

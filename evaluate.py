@@ -4,6 +4,7 @@ Usage:
     python evaluate.py [num_games]
 """
 
+import math
 import os
 import pickle
 import random
@@ -24,6 +25,50 @@ GRACE_FACTOR = 3.0
 MAX_VIOLATIONS_PER_GAME = 10
 # Maximum total moves before declaring a draw.
 MAX_MOVES_PER_GAME = 200
+
+
+def _win_rate_stats(wins, losses, draws):
+    """Compute win rate, 95% Wilson CI, two-tailed p-value, and Elo difference.
+
+    Uses tournament scoring: win=1, draw=0.5, loss=0.
+    Returns (win_rate, ci_lo, ci_hi, p_value, elo_diff).
+    """
+    n = wins + losses + draws
+    if n == 0:
+        return 0.5, 0.0, 1.0, 1.0
+    score = wins + 0.5 * draws
+    p_hat = score / n
+    # Wilson score interval (95%, z=1.96)
+    z = 1.96
+    z2 = z * z
+    denom = 1 + z2 / n
+    centre = (p_hat + z2 / (2 * n)) / denom
+    spread = z * math.sqrt((p_hat * (1 - p_hat) + z2 / (4 * n)) / n) / denom
+    ci_lo = max(0.0, centre - spread)
+    ci_hi = min(1.0, centre + spread)
+    # Two-tailed binomial test: P(result this extreme or more | p=0.5)
+    # Use normal approximation for speed (exact is fine too but needs scipy)
+    if n > 0:
+        z_obs = (score - 0.5 * n) / math.sqrt(0.25 * n)
+        # Two-tailed p-value from standard normal CDF approximation
+        p_value = 2 * _norm_sf(abs(z_obs))
+    else:
+        p_value = 1.0
+    # Elo difference: positive means first player is stronger
+    if p_hat <= 0.0 or p_hat >= 1.0:
+        elo_diff = float('inf') if p_hat >= 1.0 else float('-inf')
+    else:
+        elo_diff = -400 * math.log10(1.0 / p_hat - 1.0)
+    return p_hat, ci_lo, ci_hi, p_value, elo_diff
+
+
+def _norm_sf(x):
+    """Survival function (1 - CDF) of the standard normal, good to ~1e-7."""
+    # Abramowitz & Stegun approximation 26.2.17
+    t = 1.0 / (1.0 + 0.2316419 * x)
+    poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937
+            + t * (-1.821255978 + t * 1.330274429))))
+    return poly * math.exp(-0.5 * x * x) / math.sqrt(2 * math.pi)
 
 
 class TimeLimitExceeded(Exception):
@@ -279,9 +324,21 @@ def evaluate(bot_a, bot_b, num_games=100, win_length=6, time_limit=0.1,
     print(f"  {na:>15s}: {bot_a_wins:3d} wins ({100*bot_a_wins/total:.0f}%)")
     print(f"  {nb:>15s}: {bot_b_wins:3d} wins ({100*bot_b_wins/total:.0f}%)")
     print(f"  {'Draws':>15s}: {draws:3d}      ({100*draws/total:.0f}%)")
-    # Total win rate: wins + half draws (standard tournament scoring)
-    bot_a_score = (bot_a_wins + 0.5 * draws) / total
-    print(f"\n  {na} total win rate: {100*bot_a_score:.1f}%")
+
+    win_rate, ci_lo, ci_hi, p_value, elo_diff = _win_rate_stats(bot_a_wins, bot_b_wins, draws)
+    print(f"\n  {na} win rate: {100*win_rate:.1f}% "
+          f"(95% CI: {100*ci_lo:.1f}%\u2013{100*ci_hi:.1f}%)")
+    if math.isinf(elo_diff):
+        elo_str = "+\u221e" if elo_diff > 0 else "-\u221e"
+    else:
+        elo_str = f"{elo_diff:+.0f}"
+    print(f"  Elo difference: {elo_str}")
+    if p_value < 0.001:
+        p_str = f"{p_value:.1e}"
+    else:
+        p_str = f"{p_value:.3f}"
+    sig = "*" if p_value < 0.05 else ""
+    print(f"  p-value (H\u2080: equal strength): {p_str} {sig}")
     print()
 
     for name, depths in [(str(bot_a), bot_a_depths), (str(bot_b), bot_b_depths)]:
